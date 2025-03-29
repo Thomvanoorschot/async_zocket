@@ -34,7 +34,7 @@ pub const Error = error{
 
 pub const Client = struct {
     loop: *Loop,
-    socket: ?TCP = null,
+    socket: TCP,
     allocator: std.mem.Allocator,
     connection_state: ConnectionState = .initial,
     read_buf: [1024]u8,
@@ -74,6 +74,7 @@ pub const Client = struct {
             .server_addr = server_addr,
             .receive_buffer = receive_buffer,
             .fragment_buffer = fragment_buffer,
+            .socket = try TCP.init(server_addr),
         };
     }
 
@@ -93,8 +94,7 @@ pub const Client = struct {
     }
 
     pub fn start(self: *Client) !void {
-        const socket = try TCP.init(self.server_addr);
-        socket.connect(self.loop, &self.connect_completion, self.server_addr, Client, self, connectCallback);
+        self.socket.connect(self.loop, &self.connect_completion, self.server_addr, Client, self, connectCallback);
     }
 
     fn connectCallback(
@@ -167,7 +167,6 @@ pub const Client = struct {
         if (std.mem.indexOf(u8, header_part, "101 Switching Protocols") != null) {
             std.debug.print("WebSocket connection established.\n", .{});
             self.connection_state = .connected;
-            self.socket = socket;
 
             self.startPingTimer() catch |err| {
                 std.debug.print("Failed to start ping timer: {s}\n", .{@errorName(err)});
