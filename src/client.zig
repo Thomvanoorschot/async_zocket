@@ -201,7 +201,7 @@ pub const Client = struct {
             self.frame_pool.release(self.current_write_frame.?);
         }
         self.current_write_frame = frame;
-        self.socket.?.write(self.loop, &self.write_completion, .{ .slice = frame }, Client, self, writeCallback);
+        self.socket.write(self.loop, &self.write_completion, .{ .slice = frame }, Client, self, writeCallback);
     }
     fn writeCallback(
         self_: ?*Client,
@@ -226,7 +226,7 @@ pub const Client = struct {
     pub fn read(
         self: *Client,
     ) !void {
-        self.socket.?.read(self.loop, &self.read_completion, .{ .slice = &self.read_buf }, Client, self, readCallback);
+        self.socket.read(self.loop, &self.read_completion, .{ .slice = &self.read_buf }, Client, self, readCallback);
     }
     fn readCallback(
         self_: ?*Client,
@@ -567,7 +567,7 @@ pub const Client = struct {
             self.frame_pool.release(self.current_write_frame.?);
         }
         self.current_write_frame = frame;
-        self.socket.?.write(self.loop, &self.write_completion, .{ .slice = frame }, Client, self, writeCallback);
+        self.socket.write(self.loop, &self.write_completion, .{ .slice = frame }, Client, self, writeCallback);
         self.connection_state = .closing;
     }
 
@@ -612,7 +612,7 @@ pub const Client = struct {
             self.frame_pool.release(self.current_write_frame.?);
         }
         self.current_write_frame = frame;
-        self.socket.?.write(self.loop, &self.write_completion, .{ .slice = frame }, Client, self, writeCallback);
+        self.socket.write(self.loop, &self.write_completion, .{ .slice = frame }, Client, self, writeCallback);
     }
 
     fn createControlFrame(self: *Client, op_code: WebSocketOpCode, payload: []const u8) ![]u8 {
@@ -639,7 +639,7 @@ pub const Client = struct {
             self.frame_pool.release(self.current_write_frame.?);
         }
         self.current_write_frame = frame;
-        self.socket.?.write(self.loop, &self.write_completion, .{ .slice = frame }, Client, self, writeCallback);
+        self.socket.write(self.loop, &self.write_completion, .{ .slice = frame }, Client, self, writeCallback);
     }
 
     fn generateWsUpgradeRequest(allocator: std.mem.Allocator, host: []const u8, path: []const u8, key_buf: []u8) ![]u8 {
