@@ -13,11 +13,12 @@ pub fn build(b: *std.Build) void {
     const xev = b.dependency("libxev", .{ .target = target, .optimize = optimize });
     lib_mod.addImport("xev", xev.module("xev"));
 
-    const lib = b.addLibrary(.{
-        .linkage = .static,
+    const lib = b.addStaticLibrary(.{
         .name = "xevzocket",
-        .root_module = lib_mod,
+        .target = target,
+        .optimize = optimize,
     });
+    b.installArtifact(lib);
 
     lib_mod.linkLibrary(lib);
 }
