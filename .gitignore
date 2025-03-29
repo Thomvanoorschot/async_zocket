@@ -1,0 +1,22 @@
+# Zig build artifacts
+.zig-cache/
+zig-out/
+.build/
+.build-*/
+
+# Binary output
+*.exe
+*.pdb
+*.obj
+*.o
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS specific files
+.DS_Store
+Thumbs.db 
+backstage.tar.gz
