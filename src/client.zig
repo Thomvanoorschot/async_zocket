@@ -79,7 +79,7 @@ pub const Client = struct {
     }
 
     pub fn deinit(self: *Client) void {
-        if (self.socket != null and self.connection_state == .connected) {
+        if (self.connection_state == .connected) {
             self.sendCloseFrame(1000) catch |err| {
                 std.debug.print("Failed to send close frame during deinit: {s}\n", .{@errorName(err)});
             };
@@ -595,7 +595,7 @@ pub const Client = struct {
     ) CallbackAction {
         const self = @as(*Client, @ptrCast(@alignCast(ud.?)));
 
-        if (self.connection_state == .connected and self.socket != null) {
+        if (self.connection_state == .connected) {
             self.sendPingFrame() catch |err| {
                 std.debug.print("Failed to send ping: {s}\n", .{@errorName(err)});
             };
