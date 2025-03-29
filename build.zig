@@ -4,21 +4,19 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const lib_mod = b.createModule(.{
+    const xevzocket_mod = b.addModule("xevzocket", .{
         .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
     });
 
     const xev = b.dependency("libxev", .{ .target = target, .optimize = optimize });
-    lib_mod.addImport("xev", xev.module("xev"));
+    xevzocket_mod.addImport("xev", xev.module("xev"));
 
-    const lib = b.addStaticLibrary(.{
+    const xevzocket_lib = b.addStaticLibrary(.{
         .name = "xevzocket",
         .target = target,
         .optimize = optimize,
     });
-    b.installArtifact(lib);
+    b.installArtifact(xevzocket_lib);
 
-    lib_mod.linkLibrary(lib);
+    xevzocket_mod.linkLibrary(xevzocket_lib);
 }
