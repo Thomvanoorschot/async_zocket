@@ -54,7 +54,7 @@ pub const Client = struct {
     read_callback: *const fn (
         context: *anyopaque,
         payload: []const u8,
-    ) void,
+    ) anyerror!void,
 
     receive_buffer: std.ArrayList(u8),
     fragment_buffer: std.ArrayList(u8),
@@ -66,7 +66,7 @@ pub const Client = struct {
         comptime read_callback: *const fn (
             context: *anyopaque,
             payload: []const u8,
-        ) void,
+        ) anyerror!void,
         callback_context: *anyopaque,
     ) !Client {
         const frame_pool = try FramePool.init(allocator, 5, 256);
@@ -465,7 +465,7 @@ pub const Client = struct {
         if (!fin) {
             return Error.CanNotHandleFragmentedMessages;
         }
-        self.read_callback(self.callback_context, payload);
+        try self.read_callback(self.callback_context, payload);
     }
 
     fn handleControlFrame(
