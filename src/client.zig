@@ -213,38 +213,10 @@ pub const Client = struct {
         return .disarm;
     }
 
-    const pendingWritesQueuePayload = struct {
-        client: *Client,
-        msg: []const u8,
-    };
-    pub fn queueWrite(self: *Client, msg: []const u8) !void {
-        if (self.connection_state == .connected) {
-            return Error.AlreadyConnected;
-        }
-        const asnc = self.pending_writes[self.pending_writes_index];
-        self.pending_writes_payloads[self.pending_writes_index] = pendingWritesQueuePayload{ .client = self, .msg = msg };
-        asnc.wait(
-            self.loop,
-            &self.write_completion,
-            pendingWritesQueuePayload,
-            &self.pending_writes_payloads[self.pending_writes_index],
-            queueWriteCallback,
-        );
-        self.pending_writes_index += 1;
-    }
-    fn queueWriteCallback(
-        self_: ?*pendingWritesQueuePayload,
-        _: *Loop,
-        _: *Completion,
-        _: xev.Async.WaitError!void,
-    ) CallbackAction {
-        const payload = self_.?;
-        payload.client.write(payload.msg) catch |err| {
-            std.debug.print("Failed to write to socket: {s}\n", .{@errorName(err)});
-        };
-        return .disarm;
-    }
     pub fn write(self: *Client, msg: []const u8) !void {
+        if (self.connection_state != .connected) {
+            return self.queueWrite(msg);
+        }
         const frame = try self.createTextFrame(msg);
         if (self.current_write_frame != null) {
             self.frame_pool.release(self.current_write_frame.?);
@@ -272,10 +244,52 @@ pub const Client = struct {
         return .disarm;
     }
 
+    const pendingWritesQueuePayload = struct {
+        client: *Client,
+        msg: []const u8,
+    };
+    pub fn queueWrite(self: *Client, msg: []const u8) !void {
+        if (self.connection_state == .connected) {
+            return Error.AlreadyConnected;
+        }
+        const asnc = self.pending_writes[self.pending_writes_index];
+        self.pending_writes_payloads[self.pending_writes_index] = pendingWritesQueuePayload{
+            .client = self,
+            .msg = try self.allocator.dupe(u8, msg),
+        };
+        asnc.wait(
+            self.loop,
+            &self.write_completion,
+            pendingWritesQueuePayload,
+            &self.pending_writes_payloads[self.pending_writes_index],
+            queueWriteCallback,
+        );
+        self.pending_writes_index += 1;
+    }
+    fn queueWriteCallback(
+        self_: ?*pendingWritesQueuePayload,
+        _: *Loop,
+        _: *Completion,
+        _: xev.Async.WaitError!void,
+    ) CallbackAction {
+        const payload = self_.?;
+        payload.client.write(payload.msg) catch |err| {
+            std.debug.print("Failed to write to socket: {s}\n", .{@errorName(err)});
+        };
+        return .disarm;
+    }
+
     pub fn read(
         self: *Client,
     ) !void {
-        self.socket.read(self.loop, &self.read_completion, .{ .slice = &self.read_buf }, Client, self, readCallback);
+        self.socket.read(
+            self.loop,
+            &self.read_completion,
+            .{ .slice = &self.read_buf },
+            Client,
+            self,
+            readCallback,
+        );
     }
     fn readCallback(
         self_: ?*Client,
