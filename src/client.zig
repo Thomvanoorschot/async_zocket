@@ -30,6 +30,7 @@ pub const Error = error{
     EOF,
     ThreadPoolRequired,
     CanNotHandleFragmentedMessages,
+    AlreadyConnected,
 };
 
 pub const Client = struct {
@@ -43,7 +44,9 @@ pub const Client = struct {
     write_completion: Completion = .{},
     read_completion: Completion = .{},
     ping_completion: Completion = .{},
-
+    pending_writes: [128]xev.Async,
+    pending_writes_index: usize = 0,
+    pending_writes_payloads: [128]pendingWritesQueuePayload = undefined,
     current_write_frame: ?[]u8 = null,
     frame_pool: FramePool,
 
@@ -75,6 +78,7 @@ pub const Client = struct {
             .receive_buffer = receive_buffer,
             .fragment_buffer = fragment_buffer,
             .socket = try TCP.init(server_addr),
+            .pending_writes = try makePendingWrites(),
         };
     }
 
@@ -91,6 +95,14 @@ pub const Client = struct {
         self.frame_pool.deinit();
         self.receive_buffer.deinit();
         self.fragment_buffer.deinit();
+    }
+
+    fn makePendingWrites() ![128]xev.Async {
+        var arr: [128]xev.Async = undefined;
+        for (0..arr.len) |i| {
+            arr[i] = try xev.Async.init();
+        }
+        return arr;
     }
 
     pub fn start(self: *Client) !void {
@@ -168,6 +180,12 @@ pub const Client = struct {
             std.debug.print("WebSocket connection established.\n", .{});
             self.connection_state = .connected;
 
+            // TODO Restructure this to something better
+            for (self.pending_writes[0..self.pending_writes_index]) |pw| {
+                pw.notify() catch |err| {
+                    std.debug.print("Failed to notify pending write: {s}\n", .{@errorName(err)});
+                };
+            }
             self.startPingTimer() catch |err| {
                 std.debug.print("Failed to start ping timer: {s}\n", .{@errorName(err)});
             };
@@ -195,6 +213,37 @@ pub const Client = struct {
         return .disarm;
     }
 
+    const pendingWritesQueuePayload = struct {
+        client: *Client,
+        msg: []const u8,
+    };
+    pub fn queueWrite(self: *Client, msg: []const u8) !void {
+        if (self.connection_state == .connected) {
+            return Error.AlreadyConnected;
+        }
+        const asnc = self.pending_writes[self.pending_writes_index];
+        self.pending_writes_payloads[self.pending_writes_index] = pendingWritesQueuePayload{ .client = self, .msg = msg };
+        asnc.wait(
+            self.loop,
+            &self.write_completion,
+            pendingWritesQueuePayload,
+            &self.pending_writes_payloads[self.pending_writes_index],
+            queueWriteCallback,
+        );
+        self.pending_writes_index += 1;
+    }
+    fn queueWriteCallback(
+        self_: ?*pendingWritesQueuePayload,
+        _: *Loop,
+        _: *Completion,
+        _: xev.Async.WaitError!void,
+    ) CallbackAction {
+        const payload = self_.?;
+        payload.client.write(payload.msg) catch |err| {
+            std.debug.print("Failed to write to socket: {s}\n", .{@errorName(err)});
+        };
+        return .disarm;
+    }
     pub fn write(self: *Client, msg: []const u8) !void {
         const frame = try self.createTextFrame(msg);
         if (self.current_write_frame != null) {
