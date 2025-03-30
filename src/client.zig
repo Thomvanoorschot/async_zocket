@@ -49,8 +49,10 @@ pub const Client = struct {
     pending_writes_payloads: [128]pendingWritesQueuePayload = undefined,
     current_write_frame: ?[]u8 = null,
     frame_pool: FramePool,
+    context: *anyopaque,
 
     read_cb: *const fn (
+        context: ?*anyopaque,
         payload: []const u8,
     ) void,
 
@@ -62,8 +64,10 @@ pub const Client = struct {
         loop: *Loop,
         server_addr: std.net.Address,
         comptime read_cb: *const fn (
+            context: ?*anyopaque,
             payload: []const u8,
         ) void,
+        context: *anyopaque,
     ) !Client {
         const frame_pool = try FramePool.init(allocator, 5, 256);
         const receive_buffer = std.ArrayList(u8).init(allocator);
@@ -79,6 +83,7 @@ pub const Client = struct {
             .fragment_buffer = fragment_buffer,
             .socket = try TCP.init(server_addr),
             .pending_writes = try makePendingWrites(),
+            .context = context,
         };
     }
 
@@ -460,7 +465,7 @@ pub const Client = struct {
         if (!fin) {
             return Error.CanNotHandleFragmentedMessages;
         }
-        self.read_cb(payload);
+        self.read_cb(self.context, payload);
     }
 
     fn handleControlFrame(
