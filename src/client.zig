@@ -49,9 +49,9 @@ pub const Client = struct {
     pending_writes_payloads: [128]pendingWritesQueuePayload = undefined,
     current_write_frame: ?[]u8 = null,
     frame_pool: FramePool,
-    context: *anyopaque,
 
-    read_cb: *const fn (
+    callback_context: *anyopaque,
+    read_callback: *const fn (
         context: *anyopaque,
         payload: []const u8,
     ) void,
@@ -63,7 +63,7 @@ pub const Client = struct {
         allocator: std.mem.Allocator,
         loop: *Loop,
         server_addr: std.net.Address,
-        comptime read_cb: *const fn (
+        comptime read_callback: *const fn (
             context: *anyopaque,
             payload: []const u8,
         ) void,
@@ -77,7 +77,7 @@ pub const Client = struct {
             .loop = loop,
             .read_buf = undefined,
             .frame_pool = frame_pool,
-            .read_cb = read_cb,
+            .read_callback = read_callback,
             .server_addr = server_addr,
             .receive_buffer = receive_buffer,
             .fragment_buffer = fragment_buffer,
@@ -465,7 +465,7 @@ pub const Client = struct {
         if (!fin) {
             return Error.CanNotHandleFragmentedMessages;
         }
-        self.read_cb(self.context, payload);
+        self.read_callback(self.callback_context, payload);
     }
 
     fn handleControlFrame(
