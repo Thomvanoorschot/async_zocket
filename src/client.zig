@@ -67,7 +67,7 @@ pub const Client = struct {
             context: *anyopaque,
             payload: []const u8,
         ) void,
-        context: *anyopaque,
+        callback_context: *anyopaque,
     ) !Client {
         const frame_pool = try FramePool.init(allocator, 5, 256);
         const receive_buffer = std.ArrayList(u8).init(allocator);
@@ -83,7 +83,7 @@ pub const Client = struct {
             .fragment_buffer = fragment_buffer,
             .socket = try TCP.init(server_addr),
             .pending_writes = try makePendingWrites(),
-            .context = context,
+            .callback_context = callback_context,
         };
     }
 
