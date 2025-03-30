@@ -52,7 +52,7 @@ pub const Client = struct {
     context: *anyopaque,
 
     read_cb: *const fn (
-        context: ?*anyopaque,
+        context: *anyopaque,
         payload: []const u8,
     ) void,
 
@@ -64,7 +64,7 @@ pub const Client = struct {
         loop: *Loop,
         server_addr: std.net.Address,
         comptime read_cb: *const fn (
-            context: ?*anyopaque,
+            context: *anyopaque,
             payload: []const u8,
         ) void,
         context: *anyopaque,
