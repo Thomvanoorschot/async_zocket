@@ -554,14 +554,10 @@ pub const Client = struct {
                 return; // Don't process further after close
             },
             .ping => {
-                std.debug.print("Ping received with payload: {s}\n", .{payload});
                 try self.sendPongFrame(payload);
             },
-            .pong => {
-                std.debug.print("Pong received with payload: {s}\n", .{payload});
-                // Pong is often used as a heartbeat confirmation, no action needed here usually
-            },
-            else => unreachable, // Should only be close, ping, pong within this branch
+            .pong => {},
+            else => unreachable,
         }
     }
 
