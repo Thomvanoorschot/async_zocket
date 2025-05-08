@@ -2,6 +2,7 @@ const std = @import("std");
 const xev = @import("xev");
 const pcol = @import("protocol.zig");
 const fp = @import("frame_pool.zig");
+
 const base64 = std.base64;
 const random = std.crypto.random;
 const Loop = xev.Loop;
@@ -33,21 +34,29 @@ pub const Error = error{
     AlreadyConnected,
 };
 
+const QueueWritePayload = struct {
+    client: *Client,
+    req: xev.WriteRequest = undefined,
+    frame: []u8 = undefined,
+};
+
 pub const Client = struct {
     loop: *Loop,
     socket: TCP,
     allocator: std.mem.Allocator,
     connection_state: ConnectionState = .initial,
-    read_buf: [1024]u8,
+    read_buf: [1024]u8 = undefined,
     server_addr: std.net.Address,
     connect_completion: Completion = .{},
     write_completion: Completion = .{},
     read_completion: Completion = .{},
     ping_completion: Completion = .{},
-    pending_writes: [128]xev.Async,
-    pending_writes_index: usize = 0,
-    pending_writes_payloads: [128]pendingWritesQueuePayload = undefined,
-    current_write_frame: ?[]u8 = null,
+
+    delayed_writes: [1028][]u8 = undefined,
+    delayed_writes_index: usize = 0,
+    write_queue: xev.WriteQueue,
+    queue_write_payloads: std.heap.MemoryPool(QueueWritePayload),
+
     frame_pool: FramePool,
 
     callback_context: *anyopaque,
@@ -75,15 +84,18 @@ pub const Client = struct {
         return .{
             .allocator = allocator,
             .loop = loop,
-            .read_buf = undefined,
+            .socket = try TCP.init(server_addr),
             .frame_pool = frame_pool,
-            .read_callback = read_callback,
             .server_addr = server_addr,
+
             .receive_buffer = receive_buffer,
             .fragment_buffer = fragment_buffer,
-            .socket = try TCP.init(server_addr),
-            .pending_writes = try makePendingWrites(),
+
+            .read_callback = read_callback,
             .callback_context = callback_context,
+
+            .write_queue = xev.WriteQueue{},
+            .queue_write_payloads = std.heap.MemoryPool(QueueWritePayload).init(allocator),
         };
     }
 
@@ -93,34 +105,31 @@ pub const Client = struct {
                 std.debug.print("Failed to send close frame during deinit: {s}\n", .{@errorName(err)});
             };
         }
-        if (self.current_write_frame != null) {
-            self.frame_pool.release(self.current_write_frame.?);
-            self.current_write_frame = null;
-        }
         self.frame_pool.deinit();
         self.receive_buffer.deinit();
         self.fragment_buffer.deinit();
+        self.queue_write_payloads.deinit();
     }
 
-    fn makePendingWrites() ![128]xev.Async {
-        var arr: [128]xev.Async = undefined;
-        for (0..arr.len) |i| {
-            arr[i] = try xev.Async.init();
-        }
-        return arr;
-    }
-
-    pub fn start(self: *Client) !void {
-        self.socket.connect(self.loop, &self.connect_completion, self.server_addr, Client, self, connectCallback);
+    pub fn connect(self: *Client) !void {
+        self.socket.connect(
+            self.loop,
+            &self.connect_completion,
+            self.server_addr,
+            Client,
+            self,
+            connectCallback,
+        );
     }
 
     fn connectCallback(
         self_: ?*Client,
         l: *Loop,
         c: *Completion,
-        socket: TCP,
+        _: TCP,
         r: ConnectError!void,
     ) CallbackAction {
+        std.debug.print("Connect callback\n", .{});
         r catch |err| {
             std.debug.print("Callback error: {s}\n", .{@errorName(err)});
             return .disarm;
@@ -132,7 +141,15 @@ pub const Client = struct {
             std.debug.print("Failed to generate upgrade request: {s}\n", .{@errorName(err)});
             return .disarm;
         };
-        socket.write(l, c, .{ .slice = upgrade_request }, Client, self, upgradeWriteCallback);
+        self.socket.write(
+            l,
+            c,
+            .{ .slice = upgrade_request },
+            Client,
+            self,
+            upgradeWriteCallback,
+        );
+
         return .disarm;
     }
     fn upgradeWriteCallback(
@@ -150,7 +167,14 @@ pub const Client = struct {
 
         const self = self_.?;
         self.connection_state = .handshake_sent;
-        socket.read(l, c, .{ .slice = &self.read_buf }, Client, self, upgradeReadCallback);
+        socket.read(
+            l,
+            c,
+            .{ .slice = &self.read_buf },
+            Client,
+            self,
+            upgradeReadCallback,
+        );
         return .disarm;
     }
     fn upgradeReadCallback(
@@ -164,17 +188,28 @@ pub const Client = struct {
         const self = self_.?;
         const bytes_read = r catch |err| {
             std.debug.print("Upgrade Read error: {s}\n", .{@errorName(err)});
-            socket.close(l, c, Client, self, closeCallback);
+            socket.close(
+                l,
+                c,
+                Client,
+                self,
+                closeCallback,
+            );
             return .disarm;
         };
 
         const response_data = buf.slice[0..bytes_read];
         const header_end_marker = "\r\n\r\n";
         const header_end_index = std.mem.indexOf(u8, response_data, header_end_marker);
-
         if (header_end_index == null) {
             std.debug.print("Incomplete HTTP response received.\n", .{});
-            socket.close(l, c, Client, self, closeCallback);
+            socket.close(
+                l,
+                c,
+                Client,
+                self,
+                closeCallback,
+            );
             return .disarm;
         }
 
@@ -185,12 +220,6 @@ pub const Client = struct {
             std.debug.print("WebSocket connection established.\n", .{});
             self.connection_state = .connected;
 
-            // TODO Restructure this to something better
-            for (self.pending_writes[0..self.pending_writes_index]) |pw| {
-                pw.notify() catch |err| {
-                    std.debug.print("Failed to notify pending write: {s}\n", .{@errorName(err)});
-                };
-            }
             self.startPingTimer() catch |err| {
                 std.debug.print("Failed to start ping timer: {s}\n", .{@errorName(err)});
             };
@@ -210,7 +239,14 @@ pub const Client = struct {
                 };
             }
 
-            socket.read(l, &self.read_completion, .{ .slice = &self.read_buf }, Client, self, readCallback);
+            socket.read(
+                l,
+                &self.read_completion,
+                .{ .slice = &self.read_buf },
+                Client,
+                self,
+                readCallback,
+            );
         } else {
             std.debug.print("WebSocket upgrade failed. Server response:\n{s}\n", .{header_part});
             socket.close(l, c, Client, self, closeCallback);
@@ -218,69 +254,62 @@ pub const Client = struct {
         return .disarm;
     }
 
-    pub fn write(self: *Client, msg: []const u8) !void {
+    pub fn write(self: *Client, payload: []u8) !void {
+        const frame = try self.createTextFrame(payload);
+        return self.write_internal(frame);
+    }
+
+    fn write_internal(self: *Client, frame: []u8) !void {
+        // TODO This is really naive still
         if (self.connection_state != .connected) {
-            return self.queueWrite(msg);
+            const delayFn = struct {
+                fn inner(
+                    ud: ?*anyopaque,
+                    _: *xev.Loop,
+                    _: *xev.Completion,
+                    _: xev.Result,
+                ) xev.CallbackAction {
+                    const s: *Client = @as(*Client, @ptrCast(@alignCast(ud.?)));
+                    for (0..s.delayed_writes_index) |i| {
+                        s.write_internal(s.delayed_writes[i]) catch unreachable;
+                    }
+                    return .disarm;
+                }
+            }.inner;
+            self.delayed_writes[self.delayed_writes_index] = frame;
+            self.delayed_writes_index += 1;
+            self.loop.timer(&self.write_completion, 1000, @ptrCast(self), delayFn);
+            return;
         }
-        const frame = try self.createTextFrame(msg);
-        if (self.current_write_frame != null) {
-            self.frame_pool.release(self.current_write_frame.?);
-        }
-        self.current_write_frame = frame;
-        self.socket.write(self.loop, &self.write_completion, .{ .slice = frame }, Client, self, writeCallback);
+
+        const payload: *QueueWritePayload = try self.queue_write_payloads.create();
+        payload.client = self;
+        payload.frame = frame;
+        self.socket.queueWrite(
+            self.loop,
+            &self.write_queue,
+            &payload.req,
+            .{ .slice = payload.frame },
+            QueueWritePayload,
+            payload,
+            writeCallback,
+        );
     }
     fn writeCallback(
-        self_: ?*Client,
+        write_payload: ?*QueueWritePayload,
         _: *Loop,
         _: *Completion,
         _: TCP,
         _: WriteBuffer,
         r: WriteError!usize,
     ) CallbackAction {
+        std.debug.print("Wrote frame {s}\n", .{write_payload.?.frame});
         _ = r catch |err| {
             std.debug.print("Callback error: {s}\n", .{@errorName(err)});
             return .disarm;
         };
-        const self = self_.?;
-        if (self.current_write_frame != null) {
-            self.frame_pool.release(self.current_write_frame.?);
-            self.current_write_frame = null;
-        }
-        return .disarm;
-    }
-
-    const pendingWritesQueuePayload = struct {
-        client: *Client,
-        msg: []const u8,
-    };
-    pub fn queueWrite(self: *Client, msg: []const u8) !void {
-        if (self.connection_state == .connected) {
-            return Error.AlreadyConnected;
-        }
-        const asnc = self.pending_writes[self.pending_writes_index];
-        self.pending_writes_payloads[self.pending_writes_index] = pendingWritesQueuePayload{
-            .client = self,
-            .msg = try self.allocator.dupe(u8, msg),
-        };
-        asnc.wait(
-            self.loop,
-            &self.write_completion,
-            pendingWritesQueuePayload,
-            &self.pending_writes_payloads[self.pending_writes_index],
-            queueWriteCallback,
-        );
-        self.pending_writes_index += 1;
-    }
-    fn queueWriteCallback(
-        self_: ?*pendingWritesQueuePayload,
-        _: *Loop,
-        _: *Completion,
-        _: xev.Async.WaitError!void,
-    ) CallbackAction {
-        const payload = self_.?;
-        payload.client.write(payload.msg) catch |err| {
-            std.debug.print("Failed to write to socket: {s}\n", .{@errorName(err)});
-        };
+        const self = write_payload.?.client;
+        self.queue_write_payloads.destroy(write_payload.?);
         return .disarm;
     }
 
@@ -316,25 +345,51 @@ pub const Client = struct {
         };
 
         if (n == 0) {
-            socket.read(l, c, .{ .slice = &self.read_buf }, Client, self, readCallback);
+            socket.read(
+                l,
+                c,
+                .{ .slice = &self.read_buf },
+                Client,
+                self,
+                readCallback,
+            );
             return .disarm;
         }
 
         const received_data = buf.slice[0..n];
         self.receive_buffer.appendSlice(received_data) catch |err| {
             std.debug.print("Failed to append to receive buffer: {s}\n", .{@errorName(err)});
-            socket.close(l, c, Client, self, closeCallback);
+            socket.close(
+                l,
+                c,
+                Client,
+                self,
+                closeCallback,
+            );
             return .disarm;
         };
 
         self.processBufferedWebSocketData(l, c, socket) catch |err| {
             std.debug.print("Error processing buffered WS data: {s}\n", .{@errorName(err)});
-            socket.close(l, c, Client, self, closeCallback);
+            socket.close(
+                l,
+                c,
+                Client,
+                self,
+                closeCallback,
+            );
             return .disarm;
         };
 
         if (self.connection_state != .closing) {
-            socket.read(l, c, .{ .slice = &self.read_buf }, Client, self, readCallback);
+            socket.read(
+                l,
+                c,
+                .{ .slice = &self.read_buf },
+                Client,
+                self,
+                readCallback,
+            );
         }
         return .disarm;
     }
@@ -363,7 +418,13 @@ pub const Client = struct {
                     std.debug.print("Error sending close frame for protocol error: {s}\n", .{@errorName(err)});
                 };
                 self.connection_state = .closing;
-                socket.shutdown(l, c, Client, self, shutdownCallback);
+                socket.shutdown(
+                    l,
+                    c,
+                    Client,
+                    self,
+                    shutdownCallback,
+                );
                 return;
             }
 
@@ -385,7 +446,13 @@ pub const Client = struct {
                         std.debug.print("Error sending close frame for oversized payload: {s}\n", .{@errorName(err)});
                     };
                     self.connection_state = .closing;
-                    socket.shutdown(l, c, Client, self, shutdownCallback);
+                    socket.shutdown(
+                        l,
+                        c,
+                        Client,
+                        self,
+                        shutdownCallback,
+                    );
                     return;
                 }
                 payload_len = @intCast(high_bytes);
@@ -426,7 +493,13 @@ pub const Client = struct {
             std.debug.print("Protocol Error: Unknown or reserved frame type received: {d}\n", .{opcode_u8});
             try self.sendCloseFrame(1002); // Protocol error
             self.connection_state = .closing;
-            socket.shutdown(l, c, Client, self, shutdownCallback);
+            socket.shutdown(
+                l,
+                c,
+                Client,
+                self,
+                shutdownCallback,
+            );
             return;
         };
 
@@ -439,6 +512,7 @@ pub const Client = struct {
 
             // Control frames
             .close, .ping, .pong => {
+                std.debug.print("Handling control frame payload: {s}\n", .{payload});
                 try self.handleControlFrame(l, c, socket, opcode, fin, payload);
             },
 
@@ -447,7 +521,13 @@ pub const Client = struct {
                 std.debug.print("Protocol Error: Unexpected frame\n", .{});
                 try self.sendCloseFrame(1002); // Protocol error
                 self.connection_state = .closing;
-                socket.shutdown(l, c, Client, self, shutdownCallback);
+                socket.shutdown(
+                    l,
+                    c,
+                    Client,
+                    self,
+                    shutdownCallback,
+                );
                 return;
             },
         }
@@ -481,14 +561,26 @@ pub const Client = struct {
             std.debug.print("Protocol Error: Received fragmented control frame (opcode: {d}).\n", .{@intFromEnum(op)});
             try self.sendCloseFrame(1002); // Protocol error
             self.connection_state = .closing;
-            socket.shutdown(l, c, Client, self, shutdownCallback);
+            socket.shutdown(
+                l,
+                c,
+                Client,
+                self,
+                shutdownCallback,
+            );
             return;
         }
         if (payload.len > 125) {
             std.debug.print("Protocol Error: Received control frame with payload > 125 bytes (opcode: {d}).\n", .{@intFromEnum(op)});
             try self.sendCloseFrame(1002); // Protocol error
             self.connection_state = .closing;
-            socket.shutdown(l, c, Client, self, shutdownCallback);
+            socket.shutdown(
+                l,
+                c,
+                Client,
+                self,
+                shutdownCallback,
+            );
             return;
         }
 
@@ -548,7 +640,13 @@ pub const Client = struct {
                         std.debug.print("Error sending close frame response: {s}\n", .{@errorName(err)});
                     };
                     // Start the closing handshake
-                    socket.shutdown(l, c, Client, self, shutdownCallback);
+                    socket.shutdown(
+                        l,
+                        c,
+                        Client,
+                        self,
+                        shutdownCallback,
+                    );
                 }
                 // If already closing, we just received the ack, don't send another close.
                 return; // Don't process further after close
@@ -574,7 +672,13 @@ pub const Client = struct {
         };
 
         const self = self_.?;
-        socket.close(l, c, Client, self, closeCallback);
+        socket.close(
+            l,
+            c,
+            Client,
+            self,
+            closeCallback,
+        );
         return .disarm;
     }
     fn closeCallback(
@@ -593,6 +697,7 @@ pub const Client = struct {
     }
 
     fn createTextFrame(self: *Client, text: []const u8) ![]u8 {
+        std.debug.print("Creating text frame for payload: {s}\n", .{text});
         var frame_len = 2 + 4 + text.len;
         if (text.len > 125) {
             if (text.len > 65535) {
@@ -627,11 +732,7 @@ pub const Client = struct {
 
     fn sendCloseFrame(self: *Client, code: u16) !void {
         const frame = try self.createCloseFrame(code);
-        if (self.current_write_frame != null) {
-            self.frame_pool.release(self.current_write_frame.?);
-        }
-        self.current_write_frame = frame;
-        self.socket.write(self.loop, &self.write_completion, .{ .slice = frame }, Client, self, writeCallback);
+        try self.write_internal(frame);
         self.connection_state = .closing;
     }
 
@@ -648,7 +749,12 @@ pub const Client = struct {
     }
 
     fn startPingTimer(self: *Client) !void {
-        self.loop.timer(&self.ping_completion, 1000 * 10, self, pingTimerCallback);
+        self.loop.timer(
+            &self.ping_completion,
+            1000 * 10,
+            self,
+            pingTimerCallback,
+        );
     }
 
     fn pingTimerCallback(
@@ -672,14 +778,13 @@ pub const Client = struct {
 
     fn sendPingFrame(self: *Client) !void {
         const frame = try self.createControlFrame(.ping, "ping");
-        if (self.current_write_frame != null) {
-            self.frame_pool.release(self.current_write_frame.?);
-        }
-        self.current_write_frame = frame;
-        self.socket.write(self.loop, &self.write_completion, .{ .slice = frame }, Client, self, writeCallback);
+        self.write_internal(frame) catch |err| {
+            std.debug.print("Failed to write ping frame: {s}\n", .{@errorName(err)});
+        };
     }
 
     fn createControlFrame(self: *Client, op_code: WebSocketOpCode, payload: []const u8) ![]u8 {
+        std.debug.print("Creating control frame for payload: {s}\n", .{payload});
         const frame_len = 2 + 4 + payload.len;
         var frame = try self.frame_pool.acquire(frame_len);
         frame[0] = 0x80 | @as(u8, @intFromEnum(op_code));
@@ -699,11 +804,7 @@ pub const Client = struct {
             pong_payload = pong_payload[0..125];
         }
         const frame = try self.createControlFrame(.pong, pong_payload);
-        if (self.current_write_frame != null) {
-            self.frame_pool.release(self.current_write_frame.?);
-        }
-        self.current_write_frame = frame;
-        self.socket.write(self.loop, &self.write_completion, .{ .slice = frame }, Client, self, writeCallback);
+        try self.write_internal(frame);
     }
 
     fn generateWsUpgradeRequest(allocator: std.mem.Allocator, host: []const u8, path: []const u8, key_buf: []u8) ![]u8 {
