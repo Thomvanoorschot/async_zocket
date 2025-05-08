@@ -2,8 +2,13 @@ const std = @import("std");
 const xev = @import("xev");
 const pcol = @import("protocol.zig");
 const fp = @import("frame_pool.zig");
+const ws_req = @import("request.zig");
+const frm = @import("frame.zig");
 
-const base64 = std.base64;
+const generateWsUpgradeRequest = ws_req.generateWsUpgradeRequest;
+const createTextFrame = frm.createTextFrame;
+const createCloseFrame = frm.createCloseFrame;
+const createControlFrame = frm.createControlFrame;
 const random = std.crypto.random;
 const Loop = xev.Loop;
 const TCP = xev.TCP;
@@ -34,7 +39,7 @@ pub const Error = error{
     AlreadyConnected,
 };
 
-const QueueWritePayload = struct {
+const QueuedWrite = struct {
     client: *Client,
     req: xev.WriteRequest = undefined,
     frame: []u8 = undefined,
@@ -53,9 +58,10 @@ pub const Client = struct {
     ping_completion: Completion = .{},
 
     delayed_writes: [1028][]u8 = undefined,
+    delayed_writes_completions: [1028]Completion = undefined,
     delayed_writes_index: usize = 0,
     write_queue: xev.WriteQueue,
-    queue_write_payloads: std.heap.MemoryPool(QueueWritePayload),
+    queued_write_pool: std.heap.MemoryPool(QueuedWrite),
 
     frame_pool: FramePool,
 
@@ -95,7 +101,7 @@ pub const Client = struct {
             .callback_context = callback_context,
 
             .write_queue = xev.WriteQueue{},
-            .queue_write_payloads = std.heap.MemoryPool(QueueWritePayload).init(allocator),
+            .queued_write_pool = std.heap.MemoryPool(QueuedWrite).init(allocator),
         };
     }
 
@@ -108,7 +114,7 @@ pub const Client = struct {
         self.frame_pool.deinit();
         self.receive_buffer.deinit();
         self.fragment_buffer.deinit();
-        self.queue_write_payloads.deinit();
+        self.queued_write_pool.deinit();
     }
 
     pub fn connect(self: *Client) !void {
@@ -129,15 +135,13 @@ pub const Client = struct {
         _: TCP,
         r: ConnectError!void,
     ) CallbackAction {
-        std.debug.print("Connect callback\n", .{});
+        const self = self_.?;
         r catch |err| {
             std.debug.print("Callback error: {s}\n", .{@errorName(err)});
             return .disarm;
         };
 
-        const self = self_.?;
-        var key_buf: [base64.standard.Encoder.calcSize(16)]u8 = undefined;
-        const upgrade_request = generateWsUpgradeRequest(self.allocator, "ws.kraken.com", "/v2", &key_buf) catch |err| {
+        const upgrade_request = generateWsUpgradeRequest(self.allocator, "ws.kraken.com", "/v2") catch |err| {
             std.debug.print("Failed to generate upgrade request: {s}\n", .{@errorName(err)});
             return .disarm;
         };
@@ -255,11 +259,11 @@ pub const Client = struct {
     }
 
     pub fn write(self: *Client, payload: []u8) !void {
-        const frame = try self.createTextFrame(payload);
-        return self.write_internal(frame);
+        const frame = try createTextFrame(self.allocator, payload);
+        return self.queueWrite(frame);
     }
 
-    fn write_internal(self: *Client, frame: []u8) !void {
+    fn queueWrite(self: *Client, frame: []u8) !void {
         // TODO This is really naive still
         if (self.connection_state != .connected) {
             const delayFn = struct {
@@ -271,18 +275,19 @@ pub const Client = struct {
                 ) xev.CallbackAction {
                     const s: *Client = @as(*Client, @ptrCast(@alignCast(ud.?)));
                     for (0..s.delayed_writes_index) |i| {
-                        s.write_internal(s.delayed_writes[i]) catch unreachable;
+                        s.queueWrite(s.delayed_writes[i]) catch unreachable;
                     }
                     return .disarm;
                 }
             }.inner;
             self.delayed_writes[self.delayed_writes_index] = frame;
+            self.delayed_writes_completions[self.delayed_writes_index] = Completion{};
             self.delayed_writes_index += 1;
-            self.loop.timer(&self.write_completion, 1000, @ptrCast(self), delayFn);
+            self.loop.timer(&self.delayed_writes_completions[self.delayed_writes_index - 1], 1000, @ptrCast(self), delayFn);
             return;
         }
 
-        const payload: *QueueWritePayload = try self.queue_write_payloads.create();
+        const payload: *QueuedWrite = try self.queued_write_pool.create();
         payload.client = self;
         payload.frame = frame;
         self.socket.queueWrite(
@@ -290,13 +295,13 @@ pub const Client = struct {
             &self.write_queue,
             &payload.req,
             .{ .slice = payload.frame },
-            QueueWritePayload,
+            QueuedWrite,
             payload,
             writeCallback,
         );
     }
     fn writeCallback(
-        write_payload: ?*QueueWritePayload,
+        write_payload: ?*QueuedWrite,
         _: *Loop,
         _: *Completion,
         _: TCP,
@@ -309,7 +314,7 @@ pub const Client = struct {
             return .disarm;
         };
         const self = write_payload.?.client;
-        self.queue_write_payloads.destroy(write_payload.?);
+        self.queued_write_pool.destroy(write_payload.?);
         return .disarm;
     }
 
@@ -696,56 +701,24 @@ pub const Client = struct {
         return .disarm;
     }
 
-    fn createTextFrame(self: *Client, text: []const u8) ![]u8 {
-        std.debug.print("Creating text frame for payload: {s}\n", .{text});
-        var frame_len = 2 + 4 + text.len;
-        if (text.len > 125) {
-            if (text.len > 65535) {
-                frame_len += 8;
-            } else {
-                frame_len += 2;
-            }
-        }
-        var frame = try self.frame_pool.acquire(frame_len);
-        frame[0] = 0x81;
-        var index: usize = 1;
-        if (text.len <= 125) {
-            frame[index] = @as(u8, @intCast(text.len)) | 0x80;
-            index += 1;
-        } else if (text.len <= 65535) {
-            frame[index] = 126 | 0x80;
-            frame[index + 1] = @as(u8, @intCast((text.len >> 8) & 0xFF));
-            frame[index + 2] = @as(u8, @intCast(text.len & 0xFF));
-            index += 3;
-        } else {
-            unreachable;
-        }
-        var mask: [4]u8 = undefined;
-        random.bytes(&mask);
-        @memcpy(frame[index .. index + 4], &mask);
-        index += 4;
-        for (text, 0..) |byte, i| {
-            frame[index + i] = byte ^ mask[i % 4];
-        }
-        return frame;
-    }
-
     fn sendCloseFrame(self: *Client, code: u16) !void {
-        const frame = try self.createCloseFrame(code);
-        try self.write_internal(frame);
+        const frame = try createCloseFrame(self.allocator, code);
+        try self.queueWrite(frame);
         self.connection_state = .closing;
     }
 
-    fn createCloseFrame(self: *Client, code: u16) ![]u8 {
-        var frame = try self.frame_pool.acquire(8);
-        frame[0] = 0x88;
-        frame[1] = 0x82;
-        var mask: [4]u8 = undefined;
-        random.bytes(&mask);
-        @memcpy(frame[2..6], &mask);
-        frame[6] = @as(u8, @intCast((code >> 8) & 0xFF)) ^ mask[0];
-        frame[7] = @as(u8, @intCast(code & 0xFF)) ^ mask[1];
-        return frame;
+    fn sendPingFrame(self: *Client) !void {
+        const frame = try createControlFrame(self.allocator, .ping, "ping");
+        try self.queueWrite(frame);
+    }
+
+    fn sendPongFrame(self: *Client, payload: []const u8) !void {
+        var pong_payload: []const u8 = payload;
+        if (pong_payload.len > 125) {
+            pong_payload = pong_payload[0..125];
+        }
+        const frame = try createControlFrame(self.allocator, .pong, pong_payload);
+        try self.queueWrite(frame);
     }
 
     fn startPingTimer(self: *Client) !void {
@@ -774,51 +747,5 @@ pub const Client = struct {
             };
         }
         return .disarm;
-    }
-
-    fn sendPingFrame(self: *Client) !void {
-        const frame = try self.createControlFrame(.ping, "ping");
-        self.write_internal(frame) catch |err| {
-            std.debug.print("Failed to write ping frame: {s}\n", .{@errorName(err)});
-        };
-    }
-
-    fn createControlFrame(self: *Client, op_code: WebSocketOpCode, payload: []const u8) ![]u8 {
-        std.debug.print("Creating control frame for payload: {s}\n", .{payload});
-        const frame_len = 2 + 4 + payload.len;
-        var frame = try self.frame_pool.acquire(frame_len);
-        frame[0] = 0x80 | @as(u8, @intFromEnum(op_code));
-        frame[1] = @as(u8, @intCast(payload.len)) | 0x80;
-        var mask: [4]u8 = undefined;
-        random.bytes(&mask);
-        @memcpy(frame[2..6], &mask);
-        for (payload, 0..) |byte, i| {
-            frame[6 + i] = byte ^ mask[i % 4];
-        }
-        return frame;
-    }
-
-    fn sendPongFrame(self: *Client, payload: []const u8) !void {
-        var pong_payload: []const u8 = payload;
-        if (pong_payload.len > 125) {
-            pong_payload = pong_payload[0..125];
-        }
-        const frame = try self.createControlFrame(.pong, pong_payload);
-        try self.write_internal(frame);
-    }
-
-    fn generateWsUpgradeRequest(allocator: std.mem.Allocator, host: []const u8, path: []const u8, key_buf: []u8) ![]u8 {
-        var key_bytes: [16]u8 = undefined;
-        random.bytes(&key_bytes);
-        const encoded_key = base64.standard.Encoder.encode(key_buf, &key_bytes);
-        return std.fmt.allocPrint(allocator, "GET {s} HTTP/1.1\r\n" ++
-            "Host: {s}\r\n" ++
-            "Accept: */*\r\n" ++
-            "Connection: Upgrade\r\n" ++
-            "Upgrade: websocket\r\n" ++
-            "Sec-WebSocket-Key: {s}\r\n" ++
-            "Sec-WebSocket-Version: 13\r\n" ++
-            "User-Agent: ZigWebSocketClient/0.1\r\n" ++
-            "\r\n", .{ path, host, encoded_key });
     }
 };
