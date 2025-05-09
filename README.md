@@ -2,7 +2,7 @@
 
 ## Overview
 
-This project implements a basic, non-blocking WebSocket client in the Zig programming language. It leverages the `xev` library for asynchronous I/O operations, providing a foundation for building applications that require real-time communication over WebSockets. The development process emphasizes learning Zig's features and low-level networking concepts.
+This project implements a basic, non-blocking WebSocket client in the Zig programming language. It leverages the `xev` event loop library for asynchronous I/O operations, providing a foundation for building applications that require real-time communication over WebSockets. The client can run on a single thread a non blocking fashion due to the event loop. The development process emphasizes learning Zig's features and low-level networking concepts.
 
 ## Goals
 
