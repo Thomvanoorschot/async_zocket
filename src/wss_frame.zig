@@ -1,7 +1,8 @@
 const std = @import("std");
+const wss = @import("wss.zig");
+
 const random = std.crypto.random;
-const pcol = @import("protocol.zig");
-const WebSocketOpCode = pcol.WebSocketOpCode;
+const WebSocketOpCode = wss.WebSocketOpCode;
 
 pub fn createTextFrame(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
     std.debug.print("Creating text frame for payload: {s}\n", .{text});

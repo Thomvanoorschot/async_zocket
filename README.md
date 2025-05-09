@@ -19,7 +19,6 @@ This project implements a basic, non-blocking WebSocket client in the Zig progra
 *   **Frame Parsing:** Decodes incoming Text, Binary, Close, Ping, and Pong frames.
 *   **Frame Creation:** Encodes and masks outgoing Text, Close, Ping, and Pong frames.
 *   **Control Frame Handling:** Automatically responds to server Pings with Pongs and handles the Close handshake.
-*   **Memory Efficiency:** Utilizes a `FramePool` to reuse memory allocations for WebSocket frames.
 *   **Write Queuing:** Includes logic to queue write operations initiated before the connection is fully established.
 
 ## Learning Outcomes
