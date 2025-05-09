@@ -1,2 +1,2 @@
 pub const Client = @import("client.zig").Client;
-pub const Error = @import("client.zig").Error;
+pub const Error = @import("core_types.zig").Error;
