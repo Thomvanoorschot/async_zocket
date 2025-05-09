@@ -1,7 +1,7 @@
 .{
-    .name = .xevzocket,
+    .name = .jolt,
     .version = "0.0.1",
-    .fingerprint = 0x29e9a67d3eee47ea,
+    .fingerprint = 0xa874d5e82635c98e,
     .minimum_zig_version = "0.15.0-dev.45+24db007cd",
     .dependencies = .{
         .libxev = .{

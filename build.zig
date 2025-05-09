@@ -5,9 +5,9 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const xev = b.dependency("libxev", .{ .target = target, .optimize = optimize });
-    const xevzocket_mod = b.addModule("xevzocket", .{
+    const jolt_mod = b.addModule("jolt", .{
         .root_source_file = b.path("src/root.zig"),
     });
 
-    xevzocket_mod.addImport("xev", xev.module("xev"));
+    jolt_mod.addImport("xev", xev.module("xev"));
 }
