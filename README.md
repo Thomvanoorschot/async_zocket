@@ -37,14 +37,35 @@ Developing this client provides hands-on experience with:
 Example Usage (Conceptual):
 
 ```zig
-const client = try Client.init(allocator, loop, server_address, myReadCallback);
-try client.start();
+const std = @import("std");
+const Client = @import("client.zig").Client; // Adjust import path as necessary
+const xev = @import("xev"); // Assuming xev is available
+
+// Define your client configuration
+const client_config = Client.ClientConfig{
+    .host = "your_server_host_or_ip",
+    .port = your_server_port, // e.g. 80 or 443
+    .path = "/your_websocket_path", // e.g. "/" or "/ws"
+};
+
+// Define your callback context (if any, can be null if not used by callback)
+var my_context: u32 = 123; // Example context
+
+const client = try Client.init(
+    std.heap.page_allocator, // Or your preferred allocator
+    my_event_loop,           // Your initialized xev.Loop instance
+    client_config,
+    myReadCallback,
+    &my_context
+);
+try client.connect();
 
 // Later, once connected...
 try client.write("Hello, WebSocket Server!");
 
-fn myReadCallback(payload: []const u8) {
-    std.debug.print("Received message: {s}\n", .{payload});
+fn myReadCallback(context: *anyopaque, payload: []const u8) !void {
+    const app_context = @as(*u32, @ptrCast(@alignCast(context)));
+    std.debug.print("Context: {d}, Received message: {s}\n", .{app_context.*, payload});
 }
 ```
 

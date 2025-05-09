@@ -11,6 +11,7 @@ const Error = core_types.Error;
 const CallbackAction = xev.CallbackAction;
 const random = std.crypto.random;
 const QueuedWrite = core_types.QueuedWrite;
+const DelayedWrite = core_types.DelayedWrite;
 
 const closeSocket = tcp.closeSocket;
 const createTextFrame = wss_frame.createTextFrame;
@@ -33,9 +34,7 @@ pub fn handleConnectionEstablished(
 ) !void {
     std.log.info("WebSocket connection established.\n", .{});
     client.connection_state = .websocket_connection_established;
-    startPingTimer(client) catch |err| {
-        std.log.err("Failed to start ping timer: {s}\n", .{@errorName(err)});
-    };
+    try startPingTimer(client);
 
     if (body_part_start_index < response_data.len) {
         const initial_ws_data = response_data[body_part_start_index..];
@@ -61,11 +60,11 @@ pub fn read(
         .{ .slice = &client.read_buf },
         Client,
         client,
-        readCallback,
+        onRead,
     );
 }
 
-fn readCallback(
+fn onRead(
     client_: ?*Client,
     l: *xev.Loop,
     c: *xev.Completion,
@@ -108,54 +107,85 @@ fn readCallback(
     return .disarm;
 }
 
-pub fn write(client: *Client, payload: []const u8) !void {
-    const frame = try createTextFrame(client.allocator, payload);
-    return queueWrite(client, frame);
-}
-
-fn queueWrite(client: *Client, frame: []u8) !void {
-    // TODO This is really naive still
+pub fn write(
+    client: *Client,
+    payload: []const u8,
+    op: WebSocketOpCode,
+) !void {
     if (client.connection_state != .websocket_connection_established) {
-        const delayFn = struct {
-            fn inner(
-                ud: ?*anyopaque,
-                _: *xev.Loop,
-                _: *xev.Completion,
-                _: xev.Result,
-            ) xev.CallbackAction {
-                const s: *Client = @as(*Client, @ptrCast(@alignCast(ud.?)));
-                for (0..s.delayed_writes_index) |i| {
-                    queueWrite(s, s.delayed_writes[i]) catch unreachable;
-                }
-                return .disarm;
-            }
-        }.inner;
-        client.delayed_writes[client.delayed_writes_index] = frame;
-        client.delayed_writes_completions[client.delayed_writes_index] = xev.Completion{};
-        client.delayed_writes_index += 1;
-        client.loop.timer(
-            &client.delayed_writes_completions[client.delayed_writes_index - 1],
-            1000,
-            @ptrCast(client),
-            delayFn,
-        );
-        return;
+        return try delayWrite(client, payload);
     }
-
-    const payload: *QueuedWrite = try client.queued_write_pool.create();
-    payload.client = client;
-    payload.frame = frame;
+    
+    const frame = switch (op) {
+        .text => try createTextFrame(client.allocator, payload),
+        .ping, .pong => try createControlFrame(client.allocator, op, payload),
+        else => return Error.InvalidOpCode,
+    };
+    const queued_payload: *QueuedWrite = try client.queued_write_pool.create();
+    queued_payload.* = .{
+        .client = client,
+        .frame = frame,
+    };
     client.socket.queueWrite(
         client.loop,
         &client.write_queue,
-        &payload.req,
-        .{ .slice = payload.frame },
+        &queued_payload.req,
+        .{ .slice = queued_payload.frame },
         QueuedWrite,
-        payload,
-        writeCallback,
+        queued_payload,
+        onWrite,
     );
 }
-fn writeCallback(
+
+fn delayWrite(client: *Client, payload: []const u8) !void {
+    const delayFn = struct {
+        fn inner(
+            ud: ?*anyopaque,
+            _: *xev.Loop,
+            _: *xev.Completion,
+            _: xev.Result,
+        ) xev.CallbackAction {
+            const dw: *DelayedWrite = @as(*DelayedWrite, @ptrCast(@alignCast(ud.?)));
+            const c = dw.client;
+            write(c, dw.payload, .text) catch unreachable;
+
+            return .disarm;
+        }
+    }.inner;
+
+    if (client.delayed_write_index >= 1028) {
+        return Error.DelayedWritesBufferFull;
+    }
+    for (0..client.delayed_write_index) |i| {
+        if (std.mem.eql(u8, client.delayed_writes[i].payload, payload)) {
+            client.loop.timer(
+                &client.delayed_writes[i].completion,
+                1000,
+                @ptrCast(client.delayed_writes[i]),
+                delayFn,
+            );
+            return;
+        }
+    }
+
+    // TODO: This is still a memory leak. Need to shuffle things around
+    const delayed_write = try client.allocator.create(DelayedWrite);
+    delayed_write.* = .{
+        .client = client,
+        .payload = try client.allocator.dupe(u8, payload),
+    };
+    client.delayed_writes[client.delayed_write_index] = delayed_write;
+    client.delayed_write_index += 1;
+
+    client.loop.timer(
+        &delayed_write.completion,
+        1000,
+        @ptrCast(delayed_write),
+        delayFn,
+    );
+}
+
+fn onWrite(
     write_payload: ?*QueuedWrite,
     _: *xev.Loop,
     _: *xev.Completion,
@@ -163,9 +193,8 @@ fn writeCallback(
     _: xev.WriteBuffer,
     r: xev.WriteError!usize,
 ) CallbackAction {
-    std.debug.print("Wrote frame {s}\n", .{write_payload.?.frame});
     _ = r catch |err| {
-        std.debug.print("Callback error: {s}\n", .{@errorName(err)});
+        std.log.err("Callback error: {s}\n", .{@errorName(err)});
         return .disarm;
     };
     const self = write_payload.?.client;
@@ -261,7 +290,6 @@ fn handleWebSocketFrame(
     const opcode = std.meta.intToEnum(WebSocketOpCode, opcode_u8) catch {
         return Error.ReceivedInvalidOpcode;
     };
-
     switch (opcode) {
         .text, .binary => {
             try handleDataFrame(
@@ -327,17 +355,19 @@ fn handleControlFrame(
             }
             return;
         },
-        .ping => {
-            try sendPongFrame(client, payload);
-        },
+        .ping => try sendPongFrame(client, payload),
         .pong => {},
         else => unreachable,
     }
 }
 
 fn sendPingFrame(client: *Client) !void {
-    const frame = try createControlFrame(client.allocator, .ping, "ping");
-    try queueWrite(client, frame);
+    const frame = try createControlFrame(
+        client.allocator,
+        .ping,
+        "ping",
+    );
+    try write(client, frame, .ping);
 }
 
 fn sendPongFrame(client: *Client, payload: []const u8) !void {
@@ -345,8 +375,12 @@ fn sendPongFrame(client: *Client, payload: []const u8) !void {
     if (pong_payload.len > 125) {
         pong_payload = pong_payload[0..125];
     }
-    const frame = try createControlFrame(client.allocator, .pong, pong_payload);
-    try queueWrite(client, frame);
+    const frame = try createControlFrame(
+        client.allocator,
+        .pong,
+        pong_payload,
+    );
+    try write(client, frame, .pong);
 }
 
 fn startPingTimer(client: *Client) !void {
@@ -354,11 +388,11 @@ fn startPingTimer(client: *Client) !void {
         &client.ping_completion,
         1000 * 10,
         client,
-        pingTimerCallback,
+        startPing,
     );
 }
 
-fn pingTimerCallback(
+fn startPing(
     client_: ?*anyopaque,
     _: *xev.Loop,
     _: *xev.Completion,
@@ -368,10 +402,10 @@ fn pingTimerCallback(
 
     if (client.connection_state == .websocket_connection_established) {
         sendPingFrame(client) catch |err| {
-            std.debug.print("Failed to send ping: {s}\n", .{@errorName(err)});
+            std.log.err("Failed to send ping: {s}\n", .{@errorName(err)});
         };
         startPingTimer(client) catch |err| {
-            std.debug.print("Failed to start ping timer: {s}\n", .{@errorName(err)});
+            std.log.err("Failed to start ping timer: {s}\n", .{@errorName(err)});
         };
     }
     return .disarm;

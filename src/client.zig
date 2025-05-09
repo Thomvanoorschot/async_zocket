@@ -5,6 +5,7 @@ const wss = @import("wss.zig");
 const core_types = @import("core_types.zig");
 
 const QueuedWrite = core_types.QueuedWrite;
+const DelayedWrite = core_types.DelayedWrite;
 const ConnectionState = core_types.ConnectionState;
 
 const ClientConfig = struct {
@@ -27,9 +28,9 @@ pub const Client = struct {
 
     connection_state: ConnectionState = .initial,
     read_buf: [1024]u8 = undefined,
-    delayed_writes: [1028][]u8 = undefined,
-    delayed_writes_completions: [1028]xev.Completion = undefined,
-    delayed_writes_index: usize = 0,
+
+    delayed_write_index: usize = 0,
+    delayed_writes: [1028]*DelayedWrite = undefined,
     write_queue: xev.WriteQueue,
     queued_write_pool: std.heap.MemoryPool(QueuedWrite),
 
@@ -72,32 +73,28 @@ pub const Client = struct {
         };
     }
 
-    pub fn deinit(self: *Client) void {
-        if (self.connection_state == .connected) {
-            self.sendCloseFrame(1000) catch |err| {
-                std.debug.print("Failed to send close frame during deinit: {s}\n", .{@errorName(err)});
-            };
+    pub fn deinit(client: *Client) void {
+        if (client.connection_state == .connected) {
+            tcp.closeSocket(client);
         }
-        self.frame_pool.deinit();
-        self.receive_buffer.deinit();
-        self.fragment_buffer.deinit();
-        self.queued_write_pool.deinit();
+        client.receive_buffer.deinit();
+        client.fragment_buffer.deinit();
     }
 
-    pub fn connect(self: *Client) !void {
+    pub fn connect(client: *Client) !void {
         tcp.connect(
-            self,
-            self.loop,
-            &self.connect_completion,
-            self.address,
+            client,
+            client.loop,
+            &client.connect_completion,
+            client.address,
         );
     }
 
-    pub fn read(self: *Client) !void {
-        wss.read(self);
+    pub fn read(client: *Client) !void {
+        wss.read(client);
     }
 
-    pub fn write(self: *Client, data: []const u8) !void {
-        try wss.write(self, data);
+    pub fn write(client: *Client, data: []const u8) !void {
+        try wss.write(client, data, .text);
     }
 };
