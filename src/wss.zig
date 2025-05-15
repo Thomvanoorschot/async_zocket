@@ -115,7 +115,7 @@ pub fn write(
     if (client.connection_state != .websocket_connection_established) {
         return try delayWrite(client, payload);
     }
-    
+
     const frame = switch (op) {
         .text => try createTextFrame(client.allocator, payload),
         .ping, .pong => try createControlFrame(client.allocator, op, payload),
@@ -186,19 +186,21 @@ fn delayWrite(client: *Client, payload: []const u8) !void {
 }
 
 fn onWrite(
-    write_payload: ?*QueuedWrite,
+    write_payload_: ?*QueuedWrite,
     _: *xev.Loop,
     _: *xev.Completion,
     _: xev.TCP,
     _: xev.WriteBuffer,
     r: xev.WriteError!usize,
 ) CallbackAction {
+    const write_payload = write_payload_ orelse unreachable;
     _ = r catch |err| {
         std.log.err("Callback error: {s}\n", .{@errorName(err)});
         return .disarm;
     };
-    const self = write_payload.?.client;
-    self.queued_write_pool.destroy(write_payload.?);
+    const self = write_payload.client;
+    self.allocator.free(write_payload.frame);
+    self.queued_write_pool.destroy(write_payload);
     return .disarm;
 }
 

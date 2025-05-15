@@ -79,6 +79,7 @@ pub const Client = struct {
         }
         client.receive_buffer.deinit();
         client.fragment_buffer.deinit();
+        client.queued_write_pool.deinit();
     }
 
     pub fn connect(client: *Client) !void {
