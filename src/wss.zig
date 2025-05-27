@@ -115,9 +115,11 @@ pub fn write(
     op: WebSocketOpCode,
 ) !void {
     if (client.connection_state != .websocket_connection_established) {
-        try client.pending_websocket_writes.append(payload);
+        const copied_payload = try client.allocator.dupe(u8, payload);
+        try client.pending_websocket_writes.append(copied_payload);
         return;
     }
+    std.debug.print("AboutToWriteBytes: {s}\n", .{payload});
     const frame = switch (op) {
         .text => try createTextFrame(client.allocator, payload),
         .ping, .pong => try createControlFrame(client.allocator, op, payload),
@@ -144,9 +146,10 @@ fn onWrite(
     _: *xev.Loop,
     _: *xev.Completion,
     _: xev.TCP,
-    _: xev.WriteBuffer,
+    wb: xev.WriteBuffer,
     r: xev.WriteError!usize,
 ) CallbackAction {
+    std.debug.print("WroteBytes: {s}\n", .{wb.slice});
     const write_payload = write_payload_ orelse unreachable;
     _ = r catch |err| {
         std.log.err("Callback error: {s}\n", .{@errorName(err)});
@@ -261,12 +264,7 @@ fn handleControlFrame(
 }
 
 fn sendPingFrame(client: *Client) !void {
-    const frame = try createControlFrame(
-        client.allocator,
-        .ping,
-        "ping",
-    );
-    try write(client, frame, .ping);
+    try write(client, "ping", .ping);
 }
 
 fn sendPongFrame(client: *Client, payload: []const u8) !void {
@@ -274,12 +272,7 @@ fn sendPongFrame(client: *Client, payload: []const u8) !void {
     if (pong_payload.len > 125) {
         pong_payload = pong_payload[0..125];
     }
-    const frame = try createControlFrame(
-        client.allocator,
-        .pong,
-        pong_payload,
-    );
-    try write(client, frame, .pong);
+    try write(client, pong_payload, .pong);
 }
 
 fn startPingTimer(client: *Client) !void {

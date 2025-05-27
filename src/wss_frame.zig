@@ -36,7 +36,7 @@ pub const WebSocketFrame = struct {
 
     masked: bool,
 
-    masking_key: ?[4]u8 = null,
+    masking_key: ?[4]u8 = [4]u8{ 0x12, 0x34, 0x56, 0x78 },
 
     payload: []const u8,
 
