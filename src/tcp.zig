@@ -6,6 +6,7 @@ const core_types = @import("core_types.zig");
 
 const Client = clnt.Client;
 const Error = core_types.Error;
+const QueuedWrite = core_types.QueuedWrite;
 
 pub fn connect(
     client: *Client,
@@ -27,7 +28,7 @@ pub fn connect(
 fn onConnected(
     client_: ?*Client,
     l: *xev.Loop,
-    c: *xev.Completion,
+    _: *xev.Completion,
     socket: xev.TCP,
     r: xev.ConnectError!void,
 ) xev.CallbackAction {
@@ -47,12 +48,22 @@ fn onConnected(
         return .disarm;
     };
     client.connection_state = .tcp_connected;
-    socket.write(
+
+    const queued_payload: *QueuedWrite = client.queued_write_pool.create() catch |err| {
+        std.log.err("Failed to create queued payload: {s}\n", .{@errorName(err)});
+        return .disarm;
+    };
+    queued_payload.* = .{
+        .client = client,
+        .frame = upgrade_request,
+    };
+    socket.queueWrite(
         l,
-        c,
-        .{ .slice = upgrade_request },
-        Client,
-        client,
+        &client.write_queue,
+        &queued_payload.req,
+        .{ .slice = queued_payload.frame },
+        QueuedWrite,
+        queued_payload,
         onWebsocketUpgrade,
     );
 
@@ -60,14 +71,18 @@ fn onConnected(
 }
 
 fn onWebsocketUpgrade(
-    client_: ?*Client,
+    write_payload_: ?*QueuedWrite,
     l: *xev.Loop,
     c: *xev.Completion,
     socket: xev.TCP,
-    _: xev.WriteBuffer,
+    wb: xev.WriteBuffer,
     r: xev.WriteError!usize,
 ) xev.CallbackAction {
-    const client = client_.?;
+    std.debug.print("wb.slice: {s}\n", .{wb.slice});
+    const write_payload = write_payload_.?;
+    const client = write_payload.client;
+    client.allocator.free(write_payload.frame);
+    client.queued_write_pool.destroy(write_payload);
     _ = r catch |err| {
         std.log.err("Websocket Upgrade error: {s}\n", .{@errorName(err)});
         return .disarm;

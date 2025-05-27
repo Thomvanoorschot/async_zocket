@@ -33,16 +33,21 @@ pub fn handleConnectionEstablished(
 ) !void {
     std.log.info("WebSocket connection established.\n", .{});
     client.connection_state = .websocket_connection_established;
+    for (client.pending_websocket_writes.items) |payload| {
+        try write(client, payload, .text);
+    }
+    client.pending_websocket_writes.clearAndFree();
     try startPingTimer(client);
 
     if (body_part_start_index < response_data.len) {
         const initial_ws_data = response_data[body_part_start_index..];
         std.log.info("Initial WS data: {s}\n", .{initial_ws_data});
-        try processWebSocketData(
+        try handleWebSocketBuffer(
             client,
             client.loop,
             &client.connect_completion,
             client.socket,
+            initial_ws_data,
         );
     }
 
@@ -87,13 +92,17 @@ fn onRead(
     }
 
     const received_data = buf.slice[0..n];
-    std.log.info("Received WS data: {s}\n", .{received_data});
-    processWebSocketData(client, l, c, socket) catch |err| {
-        std.log.err("Error processing buffered WS data: {s}\n", .{@errorName(err)});
+    handleWebSocketBuffer(
+        client,
+        l,
+        c,
+        socket,
+        received_data,
+    ) catch |err| {
+        std.log.err("Error handling WS buffer: {s}\n", .{@errorName(err)});
         closeSocket(client);
         return .disarm;
     };
-
     if (client.connection_state != .closing) {
         read(client);
     }
@@ -105,6 +114,10 @@ pub fn write(
     payload: []const u8,
     op: WebSocketOpCode,
 ) !void {
+    if (client.connection_state != .websocket_connection_established) {
+        try client.pending_websocket_writes.append(payload);
+        return;
+    }
     const frame = switch (op) {
         .text => try createTextFrame(client.allocator, payload),
         .ping, .pong => try createControlFrame(client.allocator, op, payload),
@@ -161,84 +174,31 @@ pub fn createUpgradeRequest(allocator: std.mem.Allocator, host: []const u8, path
         "\r\n", .{ path, host, encoded_key });
 }
 
-fn processWebSocketData(
+fn handleWebSocketBuffer(
     client: *Client,
     l: *xev.Loop,
     c: *xev.Completion,
     socket: xev.TCP,
+    buffer: []const u8,
 ) !void {
-    var offset: usize = 0;
-    while (true) {
-        // const remaining_data = buffer_view[offset..];
-        const remaining_data = [_]u8{};
-        if (remaining_data.len < 2) break;
-
-        const first_byte = remaining_data[0];
-        const second_byte = remaining_data[1];
-        const fin = (first_byte & 0x80) != 0;
-        const opcode_u8 = first_byte & 0x0F;
-        const masked = (second_byte & 0x80) != 0;
-
-        if (masked) {
-            return Error.ReceivedMaskedFrame;
-        }
-
-        const payload_len_initial = second_byte & 0x7F;
-        var header_size: usize = 2;
-        var payload_len: usize = 0;
-
-        if (payload_len_initial == 126) {
-            header_size = 4;
-            if (remaining_data.len < header_size) break;
-            payload_len = (@as(usize, remaining_data[2]) << 8) | remaining_data[3];
-        } else if (payload_len_initial == 127) {
-            header_size = 10;
-            if (remaining_data.len < header_size) break;
-            const high_bytes = std.mem.readInt(u64, remaining_data[2..10], .big);
-            if (high_bytes > std.math.maxInt(usize)) {
-                return Error.ReceivedOversizedFrame;
-            }
-            payload_len = @intCast(high_bytes);
-        } else {
-            payload_len = payload_len_initial;
-        }
-
-        if (remaining_data.len < header_size) break;
-
-        const total_frame_size = header_size + payload_len;
-        if (remaining_data.len < total_frame_size) break;
-
-        const frame_data = remaining_data[0..total_frame_size];
-        const payload_data = frame_data[header_size..];
-        try handleWebSocketFrame(client, l, c, socket, @intCast(opcode_u8), fin, payload_data);
-
-        offset += total_frame_size;
-        if (client.connection_state == .closing) break;
-    }
-}
-
-fn handleWebSocketFrame(
-    client: *Client,
-    l: *xev.Loop,
-    c: *xev.Completion,
-    socket: xev.TCP,
-    opcode_u8: u4,
-    fin: bool,
-    payload: []const u8,
-) !void {
-    const opcode = std.meta.intToEnum(WebSocketOpCode, opcode_u8) catch {
-        return Error.ReceivedInvalidOpcode;
+    const frame = wss_frame.WebSocketFrame.parse(client.allocator, buffer) catch |err| {
+        std.log.err("Error parsing WS frame: {s}\n", .{@errorName(err)});
+        return err;
     };
-    switch (opcode) {
+    const frame_str = try frame.toString(client.allocator);
+    std.log.info("Parsed WS frame: {s}\n", .{frame_str});
+    client.allocator.free(frame_str);
+
+    switch (frame.opcode) {
         .text, .binary => {
             try handleDataFrame(
                 client,
                 l,
                 c,
                 socket,
-                opcode,
-                fin,
-                payload,
+                frame.opcode,
+                frame.fin,
+                frame.payload,
             );
         },
         .close, .ping, .pong => {
@@ -247,9 +207,9 @@ fn handleWebSocketFrame(
                 l,
                 c,
                 socket,
-                opcode,
-                fin,
-                payload,
+                frame.opcode,
+                frame.fin,
+                frame.payload,
             );
         },
         else => return Error.ReceivedUnexpectedFrame,
