@@ -11,7 +11,6 @@ const Error = core_types.Error;
 const CallbackAction = xev.CallbackAction;
 const random = std.crypto.random;
 const QueuedWrite = core_types.QueuedWrite;
-const DelayedWrite = core_types.DelayedWrite;
 
 const closeSocket = tcp.closeSocket;
 const createTextFrame = wss_frame.createTextFrame;
@@ -38,9 +37,8 @@ pub fn handleConnectionEstablished(
 
     if (body_part_start_index < response_data.len) {
         const initial_ws_data = response_data[body_part_start_index..];
-        try client.receive_buffer.appendSlice(initial_ws_data);
-
-        try processBufferedWebSocketData(
+        std.log.info("Initial WS data: {s}\n", .{initial_ws_data});
+        try processWebSocketData(
             client,
             client.loop,
             &client.connect_completion,
@@ -89,13 +87,8 @@ fn onRead(
     }
 
     const received_data = buf.slice[0..n];
-    client.receive_buffer.appendSlice(received_data) catch |err| {
-        std.log.err("Failed to append to receive buffer: {s}\n", .{@errorName(err)});
-        closeSocket(client);
-        return .disarm;
-    };
-
-    processBufferedWebSocketData(client, l, c, socket) catch |err| {
+    std.log.info("Received WS data: {s}\n", .{received_data});
+    processWebSocketData(client, l, c, socket) catch |err| {
         std.log.err("Error processing buffered WS data: {s}\n", .{@errorName(err)});
         closeSocket(client);
         return .disarm;
@@ -112,10 +105,6 @@ pub fn write(
     payload: []const u8,
     op: WebSocketOpCode,
 ) !void {
-    if (client.connection_state != .websocket_connection_established) {
-        return try delayWrite(client, payload);
-    }
-
     const frame = switch (op) {
         .text => try createTextFrame(client.allocator, payload),
         .ping, .pong => try createControlFrame(client.allocator, op, payload),
@@ -134,54 +123,6 @@ pub fn write(
         QueuedWrite,
         queued_payload,
         onWrite,
-    );
-}
-
-fn delayWrite(client: *Client, payload: []const u8) !void {
-    const delayFn = struct {
-        fn inner(
-            ud: ?*anyopaque,
-            _: *xev.Loop,
-            _: *xev.Completion,
-            _: xev.Result,
-        ) xev.CallbackAction {
-            const dw: *DelayedWrite = @as(*DelayedWrite, @ptrCast(@alignCast(ud.?)));
-            const c = dw.client;
-            write(c, dw.payload, .text) catch unreachable;
-
-            return .disarm;
-        }
-    }.inner;
-
-    if (client.delayed_write_index >= 1028) {
-        return Error.DelayedWritesBufferFull;
-    }
-    for (0..client.delayed_write_index) |i| {
-        if (std.mem.eql(u8, client.delayed_writes[i].payload, payload)) {
-            client.loop.timer(
-                &client.delayed_writes[i].completion,
-                1000,
-                @ptrCast(client.delayed_writes[i]),
-                delayFn,
-            );
-            return;
-        }
-    }
-
-    // TODO: This is still a memory leak. Need to shuffle things around
-    const delayed_write = try client.allocator.create(DelayedWrite);
-    delayed_write.* = .{
-        .client = client,
-        .payload = try client.allocator.dupe(u8, payload),
-    };
-    client.delayed_writes[client.delayed_write_index] = delayed_write;
-    client.delayed_write_index += 1;
-
-    client.loop.timer(
-        &delayed_write.completion,
-        1000,
-        @ptrCast(delayed_write),
-        delayFn,
     );
 }
 
@@ -216,20 +157,20 @@ pub fn createUpgradeRequest(allocator: std.mem.Allocator, host: []const u8, path
         "Upgrade: websocket\r\n" ++
         "Sec-WebSocket-Key: {s}\r\n" ++
         "Sec-WebSocket-Version: 13\r\n" ++
-        "User-Agent: ZigWebSocketClient/0.1\r\n" ++
+        "User-Agent: Jolt/0.1\r\n" ++
         "\r\n", .{ path, host, encoded_key });
 }
 
-fn processBufferedWebSocketData(
+fn processWebSocketData(
     client: *Client,
     l: *xev.Loop,
     c: *xev.Completion,
     socket: xev.TCP,
 ) !void {
-    var buffer_view = client.receive_buffer.items;
     var offset: usize = 0;
     while (true) {
-        const remaining_data = buffer_view[offset..];
+        // const remaining_data = buffer_view[offset..];
+        const remaining_data = [_]u8{};
         if (remaining_data.len < 2) break;
 
         const first_byte = remaining_data[0];
@@ -273,10 +214,6 @@ fn processBufferedWebSocketData(
 
         offset += total_frame_size;
         if (client.connection_state == .closing) break;
-    }
-
-    if (offset > 0) {
-        try client.receive_buffer.replaceRange(0, offset, &[_]u8{});
     }
 }
 
