@@ -21,13 +21,17 @@ pub const Server = struct {
     accept_completion: Completion = undefined,
     connections: std.ArrayList(*ClientConnection),
 
-    on_accept_ctx: *anyopaque,
+    cb_ctx: *anyopaque,
     on_accept_cb: *const fn (
         self_: ?*anyopaque,
         _: *xev.Loop,
         _: *xev.Completion,
         client_conn: *ClientConnection,
     ) xev.CallbackAction,
+    on_read_cb: *const fn (
+        self_: ?*anyopaque,
+        payload: []const u8,
+    ) void,
 
     const Self = @This();
 
@@ -35,13 +39,17 @@ pub const Server = struct {
         allocator: Allocator,
         loop: *Loop,
         options: ServerOptions,
-        on_accept_ctx: *anyopaque,
+        cb_ctx: *anyopaque,
         on_accept_cb: *const fn (
             self_: ?*anyopaque,
             _: *xev.Loop,
             _: *xev.Completion,
             client_conn: *ClientConnection,
         ) xev.CallbackAction,
+        on_read_cb: *const fn (
+            self_: ?*anyopaque,
+            payload: []const u8,
+        ) void,
     ) !Self {
         var self = Self{
             .allocator = allocator,
@@ -49,8 +57,9 @@ pub const Server = struct {
             .options = options,
             .listen_socket = try TCP.init(options.address),
             .connections = std.ArrayList(*ClientConnection).init(allocator),
-            .on_accept_ctx = on_accept_ctx,
+            .cb_ctx = cb_ctx,
             .on_accept_cb = on_accept_cb,
+            .on_read_cb = on_read_cb,
         };
         errdefer self.deinit();
 
@@ -96,6 +105,8 @@ pub const Server = struct {
             self.allocator,
             self,
             client_socket,
+            self.cb_ctx,
+            self.on_read_cb,
         ) catch |err| {
             std.log.err("Failed to allocate memory for client connection: {s}", .{@errorName(err)});
             // client_socket.close();
@@ -111,7 +122,7 @@ pub const Server = struct {
         }
         std.log.info("Accepted connection {d}/{d}", .{ self.connections.items.len, self.options.max_connections });
         return self.on_accept_cb(
-            self.on_accept_ctx,
+            self.cb_ctx,
             self.loop,
             &self.accept_completion,
             client_conn,
@@ -139,13 +150,12 @@ test "create server" {
     const wrapperStruct = struct {
         const Self = @This();
         fn accept_callback(
-            context: ?*anyopaque,
+            _: ?*anyopaque,
             _: *xev.Loop,
             _: *xev.Completion,
             cc: *ClientConnection,
         ) xev.CallbackAction {
-            const self = @as(*Self, @ptrCast(context));
-            cc.read(@ptrCast(self), read_callback);
+            cc.read();
             return .rearm;
         }
         fn read_callback(
@@ -167,6 +177,7 @@ test "create server" {
         },
         @ptrCast(&ws),
         wrapperStruct.accept_callback,
+        wrapperStruct.read_callback,
     );
     server.accept();
 
@@ -174,7 +185,11 @@ test "create server" {
     try loop.run(.once);
     // Read
     try loop.run(.once);
-    
+    // Write
+    try loop.run(.once);
+    // Read
+    try loop.run(.once);
+
     server.deinit();
     std.log.info("Server deinitialized", .{});
 }

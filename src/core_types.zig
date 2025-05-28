@@ -49,3 +49,14 @@ pub const Error = error{
     ReceivedUnexpectedFrame,
     InvalidOpCode,
 };
+
+pub const HttpRequest = struct {
+    method: ?[]const u8 = null,
+    path: ?[]const u8 = null,
+    version: ?[]const u8 = null,
+    host: ?[]const u8 = null,
+    connection: ?[]const u8 = null,
+    upgrade: ?[]const u8 = null,
+    websocket_version: ?[]const u8 = null,
+    websocket_key: ?[]const u8 = null,
+};

@@ -181,7 +181,7 @@ fn handleWebSocketBuffer(
     }
     
     while (remaining_buffer.len > 0) {
-        const frame = wss_frame.WebSocketFrame.parse(remaining_buffer) catch |err| {
+        const frame = wss_frame.WebSocketFrame.parse(remaining_buffer, client.allocator) catch |err| {
             if (err == error.InsufficientData) {
                 client.incomplete_frame_buffer = try client.allocator.dupe(u8, remaining_buffer);
                 break;
