@@ -69,11 +69,7 @@ pub const Client = struct {
     }
 
     pub fn deinit(client: *Client) void {
-        if (client.connection_state == .tcp_connected) {
-            tcp.closeSocket(client);
-        } else {
-            client.deinitMemory();
-        }
+        tcp.closeSocket(client);
     }
     pub fn deinitMemory(client: *Client) void {
         for (client.pending_websocket_writes.items) |item| {
@@ -110,11 +106,10 @@ test "create client" {
     const wrapperStruct = struct {
         const Self = @This();
         fn read_callback(context: *anyopaque, payload: []const u8) !void {
-            std.debug.print("read_callback: {s}\n", .{payload});
-            _ = context;
-            // _ = payload;
             // const self = @as(*Self, @ptrCast(context));
             // self.read_callback(self.callback_context, payload);
+            std.log.info("read_callback: {s}\n", .{payload});
+            _ = context;
         }
     };
     var ws = wrapperStruct{};

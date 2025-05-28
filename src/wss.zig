@@ -174,7 +174,6 @@ pub fn createUpgradeRequest(allocator: std.mem.Allocator, host: []const u8, path
         "\r\n", .{ path, host, encoded_key });
 }
 
-
 fn handleWebSocketBuffer(
     client: *Client,
     l: *xev.Loop,
@@ -298,6 +297,7 @@ fn startPingTimer(client: *Client) !void {
     client.loop.timer(
         &client.ping_completion,
         1000 * 10,
+        // 1000 * 2,
         client,
         startPing,
     );

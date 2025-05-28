@@ -181,12 +181,12 @@ fn closeCallback(
     r: xev.CloseError!void,
 ) xev.CallbackAction {
     const client = client_.?;
-    defer client.deinitMemory();
     r catch |err| {
         if (err != Error.ThreadPoolRequired) {
             std.log.err("Close error: {s}\n", .{@errorName(err)});
         }
     };
     client.connection_state = .closed;
+    defer client.deinitMemory();
     return .disarm;
 }
