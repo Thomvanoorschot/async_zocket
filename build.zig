@@ -5,11 +5,11 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const xev = b.dependency("libxev", .{ .target = target, .optimize = optimize });
-    const jolt_mod = b.addModule("jolt", .{
+    const async_zocket_mod = b.addModule("async_zocket", .{
         .root_source_file = b.path("src/root.zig"),
     });
 
-    jolt_mod.addImport("xev", xev.module("xev"));
+    async_zocket_mod.addImport("xev", xev.module("xev"));
 
     // Add test step
     const tests = b.addTest(.{

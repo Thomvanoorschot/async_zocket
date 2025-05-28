@@ -1,7 +1,7 @@
 .{
-    .name = .jolt,
+    .name = .async_zocket,
     .version = "0.0.1",
-    .fingerprint = 0xa874d5e82635c98e,
+    .fingerprint = 0x29ce8048972c6c88,
     .minimum_zig_version = "0.15.0-dev.483+837e0f9c3",
     .dependencies = .{
         .libxev = .{

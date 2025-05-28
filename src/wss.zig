@@ -170,7 +170,7 @@ pub fn createUpgradeRequest(allocator: std.mem.Allocator, host: []const u8, path
         "Upgrade: websocket\r\n" ++
         "Sec-WebSocket-Key: {s}\r\n" ++
         "Sec-WebSocket-Version: 13\r\n" ++
-        "User-Agent: Jolt/0.1\r\n" ++
+        "User-Agent: AsyncZocket/0.1\r\n" ++
         "\r\n", .{ path, host, encoded_key });
 }
 
