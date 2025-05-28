@@ -1,8 +1,8 @@
 const std = @import("std");
-const wss = @import("wss.zig");
+const core_types = @import("core_types.zig");
 
 const random = std.crypto.random;
-const WebSocketOpCode = wss.WebSocketOpCode;
+const WebSocketOpCode = core_types.WebSocketOpCode;
 
 /// WebSocket frame structure according to RFC 6455
 /// ```
@@ -31,12 +31,13 @@ pub const WebSocketFrame = struct {
     rsv2: bool = false,
     rsv3: bool = false,
     opcode: WebSocketOpCode,
+    masked: bool = false,
     masking_key: [4]u8 = [4]u8{ 0x12, 0x34, 0x56, 0x78 },
     payload: []const u8,
     total_frame_size: usize = undefined,
     outgoing: bool = false,
 
-    pub fn parse(data: []const u8) !WebSocketFrame {
+    pub fn parse(data: []const u8, allocator: std.mem.Allocator) !WebSocketFrame {
         if (data.len < 2) return error.InsufficientData;
 
         const first_byte = data[0];
@@ -52,6 +53,7 @@ pub const WebSocketFrame = struct {
             return error.InvalidOpcode;
         };
 
+        const masked = (second_byte & 0x80) != 0;
         const payload_len_initial = second_byte & 0x7F;
 
         var header_size: usize = 2;
@@ -73,10 +75,26 @@ pub const WebSocketFrame = struct {
             payload_len = payload_len_initial;
         }
 
+        var masking_key: [4]u8 = undefined;
+        if (masked) {
+            if (data.len < header_size + 4) return error.InsufficientData;
+            @memcpy(&masking_key, data[header_size .. header_size + 4]);
+            header_size += 4;
+        }
+
         const total_frame_size = header_size + payload_len;
         if (data.len < total_frame_size) return error.InsufficientData;
 
-        const payload = data[header_size .. header_size + payload_len];
+        var payload: []u8 = undefined;
+        if (masked) {
+            payload = try allocator.alloc(u8, payload_len);
+            const masked_payload = data[header_size .. header_size + payload_len];
+            for (masked_payload, 0..) |byte, i| {
+                payload[i] = byte ^ masking_key[i % 4];
+            }
+        } else {
+            payload = @constCast(data[header_size .. header_size + payload_len]);
+        }
 
         return WebSocketFrame{
             .fin = fin,
@@ -84,6 +102,8 @@ pub const WebSocketFrame = struct {
             .rsv2 = rsv2,
             .rsv3 = rsv3,
             .opcode = opcode,
+            .masked = masked,
+            .masking_key = if (masked) masking_key else [4]u8{ 0, 0, 0, 0 },
             .payload = payload,
             .total_frame_size = total_frame_size,
         };
@@ -145,7 +165,7 @@ pub const WebSocketFrame = struct {
     }
 
     pub fn deinit(self: *WebSocketFrame, allocator: std.mem.Allocator) void {
-        if (self.outgoing) {
+        if (self.outgoing or self.masked) {
             allocator.free(self.payload);
         }
     }

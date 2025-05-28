@@ -13,7 +13,7 @@ pub fn build(b: *std.Build) void {
 
     // Add test step
     const tests = b.addTest(.{
-        .root_source_file = b.path("src/client.zig"),
+        .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });

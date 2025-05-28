@@ -1,7 +1,7 @@
 const std = @import("std");
 const clnt = @import("client.zig");
 const xev = @import("xev");
-const wss = @import("wss.zig");
+const wss = @import("client_wss.zig");
 const core_types = @import("core_types.zig");
 
 const Client = clnt.Client;
