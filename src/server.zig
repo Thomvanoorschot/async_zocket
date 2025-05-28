@@ -164,6 +164,7 @@ test "create server" {
         ) void {
             _ = context;
             std.log.info("read_callback: {s}", .{payload});
+            std.testing.allocator.free(payload);
         }
     };
     var ws = wrapperStruct{};
@@ -191,5 +192,4 @@ test "create server" {
     try loop.run(.once);
 
     server.deinit();
-    std.log.info("Server deinitialized", .{});
 }

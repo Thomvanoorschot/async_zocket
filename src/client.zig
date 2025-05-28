@@ -106,6 +106,7 @@ test "create client" {
     const wrapperStruct = struct {
         const Self = @This();
         fn read_callback(context: *anyopaque, payload: []const u8) !void {
+            // You can access the context by casting it to the correct type
             // const self = @as(*Self, @ptrCast(context));
             // self.read_callback(self.callback_context, payload);
             std.log.info("read_callback: {s}\n", .{payload});
