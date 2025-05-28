@@ -40,8 +40,9 @@ pub const WebSocketFrame = struct {
 
     payload: []const u8,
 
+    total_frame_size: usize = undefined,
+
     pub fn parse(allocator: std.mem.Allocator, data: []const u8) !WebSocketFrame {
-        std.debug.print("parsing frame: {s}\n", .{data});
         if (data.len < 2) return error.InsufficientData;
 
         const first_byte = data[0];
@@ -53,7 +54,6 @@ pub const WebSocketFrame = struct {
         const rsv3 = (first_byte & 0x10) != 0;
         const opcode_u8 = first_byte & 0x0F;
 
-        std.debug.print("opcode_u8: {}\n", .{opcode_u8});
         const opcode = std.meta.intToEnum(WebSocketOpCode, opcode_u8) catch {
             return error.InvalidOpcode;
         };
@@ -116,6 +116,7 @@ pub const WebSocketFrame = struct {
             .masked = masked,
             .masking_key = masking_key,
             .payload = payload,
+            .total_frame_size = total_frame_size,
         };
     }
 
@@ -147,7 +148,7 @@ pub const WebSocketFrame = struct {
     pub fn serialize(self: *const WebSocketFrame, allocator: std.mem.Allocator) ![]u8 {
         const total_size = self.getSerializedSize();
         var frame = try allocator.alloc(u8, total_size);
-
+        errdefer allocator.free(frame);
         // First byte: FIN + RSV + Opcode
         frame[0] = (@as(u8, if (self.fin) 0x80 else 0)) |
             (@as(u8, if (self.rsv1) 0x40 else 0)) |

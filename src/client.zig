@@ -38,6 +38,7 @@ pub const Client = struct {
     ) anyerror!void,
 
     pending_websocket_writes: std.ArrayList([]const u8),
+    incomplete_frame_buffer: []u8 = &[_]u8{},
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -70,7 +71,16 @@ pub const Client = struct {
     pub fn deinit(client: *Client) void {
         if (client.connection_state == .tcp_connected) {
             tcp.closeSocket(client);
+        } else {
+            client.deinitMemory();
         }
+    }
+    pub fn deinitMemory(client: *Client) void {
+        for (client.pending_websocket_writes.items) |item| {
+            client.allocator.free(item);
+        }
+        client.pending_websocket_writes.deinit();
+        client.allocator.free(client.incomplete_frame_buffer);
         client.queued_write_pool.deinit();
     }
 
@@ -115,18 +125,21 @@ test "create client" {
         .{
             .host = "127.0.0.1",
             .port = 8080,
-            .path = "/",
+            .path = "/ws",
         },
         wrapperStruct.read_callback,
         @ptrCast(&ws),
     );
-    defer client.deinit();
     try client.connect();
 
     const start_time = std.time.milliTimestamp();
-    const duration_ms = 2000; // 5 seconds
+    const duration_ms = 1000;
 
     while (std.time.milliTimestamp() - start_time < duration_ms) {
+        try loop.run(.once);
+    }
+    client.deinit();
+    while (client.connection_state != .closed) {
         try loop.run(.once);
     }
 }

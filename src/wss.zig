@@ -36,7 +36,6 @@ pub fn handleConnectionEstablished(
     for (client.pending_websocket_writes.items) |payload| {
         try write(client, payload, .text);
     }
-    client.pending_websocket_writes.clearAndFree();
     try startPingTimer(client);
 
     if (body_part_start_index < response_data.len) {
@@ -119,7 +118,6 @@ pub fn write(
         try client.pending_websocket_writes.append(copied_payload);
         return;
     }
-    std.debug.print("AboutToWriteBytes: {s}\n", .{payload});
     const frame = switch (op) {
         .text => try createTextFrame(client.allocator, payload),
         .ping, .pong => try createControlFrame(client.allocator, op, payload),
@@ -146,10 +144,9 @@ fn onWrite(
     _: *xev.Loop,
     _: *xev.Completion,
     _: xev.TCP,
-    wb: xev.WriteBuffer,
+    _: xev.WriteBuffer,
     r: xev.WriteError!usize,
 ) CallbackAction {
-    std.debug.print("WroteBytes: {s}\n", .{wb.slice});
     const write_payload = write_payload_ orelse unreachable;
     _ = r catch |err| {
         std.log.err("Callback error: {s}\n", .{@errorName(err)});
@@ -177,6 +174,7 @@ pub fn createUpgradeRequest(allocator: std.mem.Allocator, host: []const u8, path
         "\r\n", .{ path, host, encoded_key });
 }
 
+
 fn handleWebSocketBuffer(
     client: *Client,
     l: *xev.Loop,
@@ -184,38 +182,59 @@ fn handleWebSocketBuffer(
     socket: xev.TCP,
     buffer: []const u8,
 ) !void {
-    const frame = wss_frame.WebSocketFrame.parse(client.allocator, buffer) catch |err| {
-        std.log.err("Error parsing WS frame: {s}\n", .{@errorName(err)});
-        return err;
-    };
-    const frame_str = try frame.toString(client.allocator);
-    std.log.info("Parsed WS frame: {s}\n", .{frame_str});
-    client.allocator.free(frame_str);
+    var remaining_buffer = buffer;
+    if (client.incomplete_frame_buffer.len > 0) {
+        remaining_buffer = try std.mem.concat(client.allocator, u8, &.{ client.incomplete_frame_buffer, remaining_buffer });
+        client.allocator.free(client.incomplete_frame_buffer);
+        client.incomplete_frame_buffer = &[_]u8{};
+    }
+    // Process all complete frames in the buffer
+    while (remaining_buffer.len > 0) {
+        const frame = wss_frame.WebSocketFrame.parse(client.allocator, remaining_buffer) catch |err| {
+            if (err == error.InsufficientData) {
+                client.incomplete_frame_buffer = try client.allocator.dupe(u8, remaining_buffer);
+                break;
+            }
+            std.log.err("Error parsing WS frame: {s}\n", .{@errorName(err)});
+            return err;
+        };
 
-    switch (frame.opcode) {
-        .text, .binary => {
-            try handleDataFrame(
-                client,
-                l,
-                c,
-                socket,
-                frame.opcode,
-                frame.fin,
-                frame.payload,
-            );
-        },
-        .close, .ping, .pong => {
-            try handleControlFrame(
-                client,
-                l,
-                c,
-                socket,
-                frame.opcode,
-                frame.fin,
-                frame.payload,
-            );
-        },
-        else => return Error.ReceivedUnexpectedFrame,
+        const frame_str = try frame.toString(client.allocator);
+        client.allocator.free(frame_str);
+
+        // Process the frame
+        switch (frame.opcode) {
+            .text, .binary => {
+                try handleDataFrame(
+                    client,
+                    l,
+                    c,
+                    socket,
+                    frame.opcode,
+                    frame.fin,
+                    frame.payload,
+                );
+            },
+            .close, .ping, .pong => {
+                try handleControlFrame(
+                    client,
+                    l,
+                    c,
+                    socket,
+                    frame.opcode,
+                    frame.fin,
+                    frame.payload,
+                );
+            },
+            else => return Error.ReceivedUnexpectedFrame,
+        }
+
+        // Clean up frame memory if it was allocated for unmasking
+        var mutable_frame = frame;
+        mutable_frame.deinit(client.allocator);
+
+        // Move to the next frame in the buffer
+        remaining_buffer = remaining_buffer[frame.total_frame_size..];
     }
 }
 

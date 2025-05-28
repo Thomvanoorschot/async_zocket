@@ -75,10 +75,9 @@ fn onWebsocketUpgrade(
     l: *xev.Loop,
     c: *xev.Completion,
     socket: xev.TCP,
-    wb: xev.WriteBuffer,
+    _: xev.WriteBuffer,
     r: xev.WriteError!usize,
 ) xev.CallbackAction {
-    std.debug.print("wb.slice: {s}\n", .{wb.slice});
     const write_payload = write_payload_.?;
     const client = write_payload.client;
     client.allocator.free(write_payload.frame);
@@ -182,6 +181,7 @@ fn closeCallback(
     r: xev.CloseError!void,
 ) xev.CallbackAction {
     const client = client_.?;
+    defer client.deinitMemory();
     r catch |err| {
         if (err != Error.ThreadPoolRequired) {
             std.log.err("Close error: {s}\n", .{@errorName(err)});
