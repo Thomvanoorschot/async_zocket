@@ -1,7 +1,7 @@
 const std = @import("std");
 const xev = @import("xev");
 const tcp = @import("tcp.zig");
-const wss = @import("wss.zig");
+const wss = @import("client_wss.zig");
 const core_types = @import("core_types.zig");
 
 const QueuedWrite = core_types.QueuedWrite;

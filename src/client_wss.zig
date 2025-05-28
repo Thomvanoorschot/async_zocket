@@ -11,20 +11,12 @@ const Error = core_types.Error;
 const CallbackAction = xev.CallbackAction;
 const random = std.crypto.random;
 const QueuedWrite = core_types.QueuedWrite;
+const WebSocketOpCode = core_types.WebSocketOpCode;
 
 const closeSocket = tcp.closeSocket;
 const createTextFrame = wss_frame.createTextFrame;
 const createCloseFrame = wss_frame.createCloseFrame;
 const createControlFrame = wss_frame.createControlFrame;
-
-pub const WebSocketOpCode = enum(u4) {
-    continuation = 0x0,
-    text = 0x1,
-    binary = 0x2,
-    ping = 0x9,
-    pong = 0xA,
-    close = 0x8,
-};
 
 pub fn handleConnectionEstablished(
     client: *Client,

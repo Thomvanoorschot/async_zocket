@@ -1,8 +1,8 @@
 const std = @import("std");
-const wss = @import("wss.zig");
+const core_types = @import("core_types.zig");
 
 const random = std.crypto.random;
-const WebSocketOpCode = wss.WebSocketOpCode;
+const WebSocketOpCode = core_types.WebSocketOpCode;
 
 /// WebSocket frame structure according to RFC 6455
 /// ```
