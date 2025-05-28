@@ -187,9 +187,9 @@ fn handleWebSocketBuffer(
         client.allocator.free(client.incomplete_frame_buffer);
         client.incomplete_frame_buffer = &[_]u8{};
     }
-    // Process all complete frames in the buffer
+    
     while (remaining_buffer.len > 0) {
-        const frame = wss_frame.WebSocketFrame.parse(client.allocator, remaining_buffer) catch |err| {
+        const frame = wss_frame.WebSocketFrame.parse(remaining_buffer) catch |err| {
             if (err == error.InsufficientData) {
                 client.incomplete_frame_buffer = try client.allocator.dupe(u8, remaining_buffer);
                 break;
@@ -198,10 +198,6 @@ fn handleWebSocketBuffer(
             return err;
         };
 
-        const frame_str = try frame.toString(client.allocator);
-        client.allocator.free(frame_str);
-
-        // Process the frame
         switch (frame.opcode) {
             .text, .binary => {
                 try handleDataFrame(
@@ -227,12 +223,8 @@ fn handleWebSocketBuffer(
             },
             else => return Error.ReceivedUnexpectedFrame,
         }
-
-        // Clean up frame memory if it was allocated for unmasking
         var mutable_frame = frame;
         mutable_frame.deinit(client.allocator);
-
-        // Move to the next frame in the buffer
         remaining_buffer = remaining_buffer[frame.total_frame_size..];
     }
 }
