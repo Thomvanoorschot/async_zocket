@@ -9,12 +9,6 @@ pub const QueuedWrite = struct {
     frame: []u8 = undefined,
 };
 
-pub const DelayedWrite = struct {
-    client: *Client,
-    completion: xev.Completion = undefined,
-    payload: []const u8 = undefined,
-};
-
 pub const ConnectionState = enum {
     initial,
     connecting,
@@ -45,5 +39,4 @@ pub const Error = error{
     ReceivedOversizedControlFrame,
     ReceivedUnexpectedFrame,
     InvalidOpCode,
-    DelayedWritesBufferFull,
 };
