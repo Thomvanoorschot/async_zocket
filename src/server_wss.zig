@@ -42,13 +42,14 @@ pub fn read(connection: *ClientConnection) void {
                 inner_connection.close();
                 return .disarm;
             }
-            const payload_copy = inner_connection.allocator.dupe(u8, frame.payload) catch {
-                std.log.err("Failed to dupe payload", .{});
-                inner_connection.close();
-                return .disarm;
-            };
-            // TODO: Proably make it return something optionally
-            inner_connection.on_read_cb(inner_connection.cb_ctx, payload_copy);
+            if (inner_connection.on_read_cb) |cb| {
+                const payload_copy = inner_connection.allocator.dupe(u8, frame.payload) catch {
+                    std.log.err("Failed to dupe payload", .{});
+                    inner_connection.close();
+                    return .disarm;
+                };
+                cb(inner_connection.read_cb_ctx, payload_copy);
+            }
             return .rearm;
         }
     }.inner;

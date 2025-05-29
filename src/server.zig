@@ -28,10 +28,7 @@ pub const Server = struct {
         _: *xev.Completion,
         client_conn: *ClientConnection,
     ) xev.CallbackAction,
-    on_read_cb: *const fn (
-        self_: ?*anyopaque,
-        payload: []const u8,
-    ) void,
+
 
     const Self = @This();
 
@@ -46,10 +43,6 @@ pub const Server = struct {
             _: *xev.Completion,
             client_conn: *ClientConnection,
         ) xev.CallbackAction,
-        on_read_cb: *const fn (
-            self_: ?*anyopaque,
-            payload: []const u8,
-        ) void,
     ) !Self {
         var self = Self{
             .allocator = allocator,
@@ -59,7 +52,6 @@ pub const Server = struct {
             .connections = std.ArrayList(*ClientConnection).init(allocator),
             .cb_ctx = cb_ctx,
             .on_accept_cb = on_accept_cb,
-            .on_read_cb = on_read_cb,
         };
         errdefer self.deinit();
 
@@ -105,8 +97,6 @@ pub const Server = struct {
             self.allocator,
             self,
             client_socket,
-            self.cb_ctx,
-            self.on_read_cb,
         ) catch |err| {
             std.log.err("Failed to allocate memory for client connection: {s}", .{@errorName(err)});
             // client_socket.close();
@@ -155,6 +145,10 @@ test "create server" {
             _: *xev.Completion,
             cc: *ClientConnection,
         ) xev.CallbackAction {
+            cc.setReadCallback(
+                @ptrCast(cc),
+                read_callback,
+            );
             cc.read();
             return .rearm;
         }
@@ -178,7 +172,6 @@ test "create server" {
         },
         @ptrCast(&ws),
         wrapperStruct.accept_callback,
-        wrapperStruct.read_callback,
     );
     server.accept();
 
