@@ -4,6 +4,7 @@ pub const Server = @import("server.zig").Server;
 pub const ServerOptions = @import("server.zig").ServerOptions;
 pub const ClientConnection = @import("client_connection.zig").ClientConnection;
 pub const Error = @import("core_types.zig").Error;
+pub const WebSocketOpCode = @import("core_types.zig").WebSocketOpCode;
 
 test {
     std.testing.refAllDecls(@This());

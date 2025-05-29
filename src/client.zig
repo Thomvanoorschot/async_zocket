@@ -80,7 +80,7 @@ pub const Client = struct {
         client.queued_write_pool.deinit();
     }
 
-    pub fn connect(client: *Client) !void {
+    pub fn connect(client: *Client) void {
         tcp.connect(
             client,
             client.loop,
@@ -89,7 +89,7 @@ pub const Client = struct {
         );
     }
 
-    pub fn read(client: *Client) !void {
+    pub fn read(client: *Client) void {
         wss.read(client);
     }
 
@@ -126,7 +126,7 @@ test "create client" {
         wrapperStruct.read_callback,
         @ptrCast(&ws),
     );
-    try client.connect();
+    client.connect();
 
     const start_time = std.time.milliTimestamp();
     const duration_ms = 1000;

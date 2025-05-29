@@ -3,6 +3,7 @@ const xev = @import("xev");
 const svr = @import("server.zig");
 const wss_frame = @import("wss_frame.zig");
 const server_wss = @import("server_wss.zig");
+const core_types = @import("core_types.zig");
 
 const TCP = xev.TCP;
 const Completion = xev.Completion;
@@ -137,12 +138,13 @@ pub const ClientConnection = struct {
 
     pub fn write(
         self: *Self,
+        op: core_types.WebSocketOpCode,
         data: []const u8,
     ) !void {
         const queued_payload: *QueuedWrite = try self.queued_write_pool.create();
         queued_payload.* = .{
             .client_connection = self,
-            .payload = try wss_frame.createTextFrame(self.allocator, data),
+            .payload = try wss_frame.createTextFrame(self.allocator, data, op,false),
         };
 
         self.socket.queueWrite(

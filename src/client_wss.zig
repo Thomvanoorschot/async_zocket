@@ -111,8 +111,8 @@ pub fn write(
         return;
     }
     const frame = switch (op) {
-        .text => try createTextFrame(client.allocator, payload),
-        .ping, .pong => try createControlFrame(client.allocator, op, payload),
+        .text => try createTextFrame(client.allocator, payload, op, true),
+        .ping, .pong => try createControlFrame(client.allocator, op, payload, true),
         else => return Error.InvalidOpCode,
     };
     const queued_payload: *QueuedWrite = try client.queued_write_pool.create();
