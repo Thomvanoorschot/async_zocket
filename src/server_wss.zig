@@ -48,7 +48,11 @@ pub fn read(connection: *ClientConnection) void {
                     inner_connection.close();
                     return .disarm;
                 };
-                cb(inner_connection.read_cb_ctx, payload_copy);
+                cb(inner_connection.read_cb_ctx, payload_copy) catch |err| {
+                    std.log.err("Failed to read: {any}", .{err});
+                    inner_connection.close();
+                    return .disarm;
+                };
             }
             return .rearm;
         }

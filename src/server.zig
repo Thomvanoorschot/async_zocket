@@ -9,7 +9,8 @@ const Completion = xev.Completion;
 const ClientConnection = clnt_conn.ClientConnection;
 
 pub const ServerOptions = struct {
-    address: std.net.Address,
+    host: []const u8,
+    port: u16,
     max_connections: u31 = 1024,
 };
 
@@ -29,7 +30,6 @@ pub const Server = struct {
         client_conn: *ClientConnection,
     ) xev.CallbackAction,
 
-
     const Self = @This();
 
     pub fn init(
@@ -44,18 +44,19 @@ pub const Server = struct {
             client_conn: *ClientConnection,
         ) xev.CallbackAction,
     ) !Self {
+        const address = try std.net.Address.parseIp4(options.host, options.port);
         var self = Self{
             .allocator = allocator,
             .loop = loop,
             .options = options,
-            .listen_socket = try TCP.init(options.address),
+            .listen_socket = try TCP.init(address),
             .connections = std.ArrayList(*ClientConnection).init(allocator),
             .cb_ctx = cb_ctx,
             .on_accept_cb = on_accept_cb,
         };
         errdefer self.deinit();
 
-        try self.listen_socket.bind(options.address);
+        try self.listen_socket.bind(address);
         try self.listen_socket.listen(options.max_connections);
 
         return self;
@@ -155,7 +156,7 @@ test "create server" {
         fn read_callback(
             context: ?*anyopaque,
             payload: []const u8,
-        ) void {
+        ) !void {
             _ = context;
             std.log.info("read_callback: {s}", .{payload});
             std.testing.allocator.free(payload);
@@ -167,7 +168,8 @@ test "create server" {
         std.testing.allocator,
         &loop,
         .{
-            .address = try std.net.Address.parseIp4("127.0.0.1", 8081),
+            .host = "127.0.0.1",
+            .port = 8081,
             .max_connections = 10,
         },
         @ptrCast(&ws),

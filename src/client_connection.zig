@@ -30,7 +30,7 @@ pub const ClientConnection = struct {
     on_read_cb: ?*const fn (
         self_: ?*anyopaque,
         payload: []const u8,
-    ) void = null,
+    ) anyerror!void = null,
     close_cb_ctx: *anyopaque = undefined,
     on_close_cb: ?*const fn (
         self_: ?*anyopaque,
@@ -121,7 +121,11 @@ pub const ClientConnection = struct {
 
                 // TODO: Proably make it return something optionally
                 if (inner_self.on_read_cb) |cb| {
-                    cb(inner_self.read_cb_ctx, buf.slice[0..bytes_read]);
+                    cb(inner_self.read_cb_ctx, buf.slice[0..bytes_read]) catch |err| {
+                        std.log.err("Failed to read: {any}", .{err});
+                        inner_self.close();
+                        return .disarm;
+                    };
                 }
                 return .disarm;
             }
@@ -144,7 +148,7 @@ pub const ClientConnection = struct {
         const queued_payload: *QueuedWrite = try self.queued_write_pool.create();
         queued_payload.* = .{
             .client_connection = self,
-            .payload = try wss_frame.createTextFrame(self.allocator, data, op,false),
+            .payload = try wss_frame.createTextFrame(self.allocator, data, op, false),
         };
 
         self.socket.queueWrite(
@@ -212,7 +216,7 @@ pub const ClientConnection = struct {
         on_read_cb: *const fn (
             self_: ?*anyopaque,
             payload: []const u8,
-        ) void,
+        ) anyerror!void,
     ) void {
         self.read_cb_ctx = on_read_ctx;
         self.on_read_cb = on_read_cb;

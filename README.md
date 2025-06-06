@@ -137,8 +137,9 @@ var server = try AsyncZocket.Server.init(
     std.heap.page_allocator,
     &loop,
     .{
-        .address = try std.net.Address.parseIp4("127.0.0.1", 8080),
-        .max_connections = 100,
+        .host = "127.0.0.1",
+        .port = 8081,
+        .max_connections = 10,
     },
     @ptrCast(&ws),
     wrapperStruct.accept_callback,
