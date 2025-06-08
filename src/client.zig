@@ -69,6 +69,7 @@ pub const Client = struct {
     }
 
     pub fn deinit(client: *Client) void {
+        client.connection_state = .closing;
         tcp.closeSocket(client);
     }
     pub fn deinitMemory(client: *Client) void {

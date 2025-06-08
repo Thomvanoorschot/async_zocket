@@ -179,7 +179,7 @@ fn handleWebSocketBuffer(
         client.allocator.free(client.incomplete_frame_buffer);
         client.incomplete_frame_buffer = &[_]u8{};
     }
-    
+
     while (remaining_buffer.len > 0) {
         const frame = wss_frame.WebSocketFrame.parse(remaining_buffer, client.allocator) catch |err| {
             if (err == error.InsufficientData) {
@@ -230,10 +230,12 @@ fn handleDataFrame(
     fin: bool,
     payload: []const u8,
 ) !void {
-    if (!fin) {
-        return Error.CanNotHandleFragmentedMessages;
+    if (client.connection_state == .websocket_connection_established) {
+        if (!fin) {
+            return Error.CanNotHandleFragmentedMessages;
+        }
+        try client.read_callback(client.callback_context, payload);
     }
-    try client.read_callback(client.callback_context, payload);
 }
 
 fn handleControlFrame(
