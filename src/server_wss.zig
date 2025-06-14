@@ -27,7 +27,7 @@ pub fn read(connection: *ClientConnection) void {
                     inner_connection.close();
                     return .disarm;
                 }
-                std.log.err("Failed to read: {any}", .{err});
+                std.log.err("C Failed to read: {any}", .{err});
                 inner_connection.close();
                 return .disarm;
             };
@@ -42,17 +42,35 @@ pub fn read(connection: *ClientConnection) void {
                 inner_connection.close();
                 return .disarm;
             }
-            if (inner_connection.on_read_cb) |cb| {
-                const payload_copy = inner_connection.allocator.dupe(u8, frame.payload) catch {
-                    std.log.err("Failed to dupe payload", .{});
+
+            switch (frame.opcode) {
+                .close => {
+                    std.log.info("Received close frame, closing connection", .{});
                     inner_connection.close();
                     return .disarm;
-                };
-                cb(inner_connection.read_cb_ctx, payload_copy) catch |err| {
-                    std.log.err("Failed to read: {any}", .{err});
-                    inner_connection.close();
-                    return .disarm;
-                };
+                },
+                .ping => {
+                    std.log.info("Received ping, sending pong", .{});
+                    // TODO: Send pong frame back
+                    return .rearm;
+                },
+                .pong => {
+                    std.log.info("Received pong", .{});
+                    return .rearm;
+                },
+                .text, .binary => {
+                    if (inner_connection.on_read_cb) |cb| {
+                        cb(inner_connection.read_cb_ctx, frame.payload) catch |err| {
+                            std.log.err("D Failed to read: {any}", .{err});
+                            inner_connection.close();
+                            return .disarm;
+                        };
+                    }
+                },
+                else => {
+                    std.log.warn("Received unknown frame type: {}", .{frame.opcode});
+                    return .rearm;
+                },
             }
             return .rearm;
         }
