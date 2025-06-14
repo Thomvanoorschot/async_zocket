@@ -45,7 +45,6 @@ pub fn read(connection: *ClientConnection) void {
 
             switch (frame.opcode) {
                 .close => {
-                    std.log.info("Received close frame, closing connection", .{});
                     inner_connection.close();
                     return .disarm;
                 },
