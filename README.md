@@ -191,10 +191,11 @@ try loop.run(.until_done);
 - ✅ Proper masking and unmasking
 - ✅ Connection management and pooling
 - ✅ Asynchronous I/O with xev
+- ✅ SSL/TLS support for client
 
 **Upcoming Features:**
 - 🔄 Fragmented message support
-- 🔄 SSL/TLS support (WSS)
+- 🔄 SSL/TLS support for server
 
 ## Requirements
 
