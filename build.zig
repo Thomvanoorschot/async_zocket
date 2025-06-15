@@ -15,7 +15,7 @@ pub fn build(b: *std.Build) !void {
     const full_path = boringssl_dep.path("crypto/aes").getPath(b);
     try glob_sources(arena.allocator(), full_path, ".cc", &crypto_sources);
 
-    const boringssl_crypto = buildBoringCrypto(
+    const boringssl_crypto = try buildBoringCrypto(
         b,
         target,
         optimize,
@@ -30,11 +30,14 @@ pub fn build(b: *std.Build) !void {
     );
 
     const async_zocket_mod = b.addModule("async_zocket", .{
+        .link_libcpp = true,
         .root_source_file = b.path("src/root.zig"),
     });
 
     async_zocket_mod.addImport("xev", xev_dev.module("xev"));
     async_zocket_mod.addIncludePath(boringssl_dep.path("include"));
+    async_zocket_mod.linkLibrary(boringssl_crypto);
+    async_zocket_mod.linkLibrary(boringssl_ssl);
 
     const tests = b.addTest(.{
         .root_source_file = b.path("src/root.zig"),
@@ -43,7 +46,7 @@ pub fn build(b: *std.Build) !void {
     });
 
     tests.root_module.addImport("xev", xev_dev.module("xev"));
-    tests.addIncludePath(b.path("deps/boringssl/include"));
+    tests.addIncludePath(boringssl_dep.path("include"));
     tests.linkLibCpp();
     tests.linkLibrary(boringssl_crypto);
     tests.linkLibrary(boringssl_ssl);
@@ -58,7 +61,7 @@ fn buildBoringCrypto(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     boringssl_dep: *std.Build.Dependency,
-) *std.Build.Step.Compile {
+) !*std.Build.Step.Compile {
     const crypto = b.addStaticLibrary(.{
         .name = "crypto",
         .target = target,
@@ -73,63 +76,14 @@ fn buildBoringCrypto(
     defer arena.deinit();
     var crypto_sources = std.ArrayList([]const u8).init(arena.allocator());
 
-    const crypto_dirs = [_][]const u8{
-        "crypto/asn1",
-        "crypto/base64",
-        "crypto/bio",
-        "crypto/blake2",
-        "crypto/bn_extra",
-        "crypto/buf",
-        "crypto/bytestring",
-        "crypto/chacha",
-        "crypto/cipher_extra",
-        "crypto/conf",
-        "crypto/curve25519",
-        "crypto/des",
-        "crypto/dh_extra",
-        "crypto/digest_extra",
-        "crypto/dilithium",
-        "crypto/dsa",
-        "crypto/ec_extra",
-        "crypto/ecdh_extra",
-        "crypto/ecdsa_extra",
-        "crypto/engine",
-        "crypto/err",
-        "crypto/evp",
-        "crypto/fipsmodule",
-        "crypto/hmac_extra",
-        "crypto/hpke",
-        "crypto/hrss",
-        "crypto/keccak",
-        "crypto/kyber",
-        "crypto/lhash",
-        "crypto/md4",
-        "crypto/md5",
-        "crypto/mldsa",
-        "crypto/mlkem",
-        "crypto/obj",
-        "crypto/pem",
-        "crypto/pkcs7",
-        "crypto/pkcs8",
-        "crypto/poly1305",
-        "crypto/pool",
-        "crypto/rand_extra",
-        "crypto/rc4",
-        "crypto/rsa_extra",
-        "crypto/sha",
-        "crypto/siphash",
-        "crypto/slhdsa",
-        "crypto/spx",
-        "crypto/stack",
-        "crypto/trust_token",
-        "crypto/x509",
-    };
+    const crypto_dirs = [_][]const u8{ "crypto", "crypto/asn1", "crypto/base64", "crypto/bio", "crypto/blake2", "crypto/bn_extra", "crypto/buf", "crypto/bytestring", "crypto/chacha", "crypto/cipher_extra", "crypto/conf", "crypto/curve25519", "crypto/des", "crypto/dh_extra", "crypto/digest_extra", "crypto/dilithium", "crypto/dsa", "crypto/ec_extra", "crypto/ecdh_extra", "crypto/ecdsa_extra", "crypto/engine", "crypto/err", "crypto/evp", "crypto/fipsmodule", "crypto/hmac_extra", "crypto/hpke", "crypto/hrss", "crypto/keccak", "crypto/kyber", "crypto/lhash", "crypto/md4", "crypto/md5", "crypto/mldsa", "crypto/mlkem", "crypto/obj", "crypto/pem", "crypto/pkcs7", "crypto/pkcs8", "crypto/poly1305", "crypto/pool", "crypto/rand_extra", "crypto/rc4", "crypto/rsa_extra", "crypto/sha", "crypto/siphash", "crypto/slhdsa", "crypto/spx", "crypto/stack", "crypto/trust_token", "crypto/x509", "gen/crypto" };
 
     const boringssl_root = boringssl_dep.path(".").getPath(b);
 
     for (crypto_dirs) |dir| {
         const full_dir_path = boringssl_dep.path(dir).getPath(b);
         glob_sources_relative(arena.allocator(), full_dir_path, boringssl_root, ".cc", &crypto_sources) catch continue;
+        glob_sources_relative(arena.allocator(), full_dir_path, boringssl_root, ".c", &crypto_sources) catch continue;
     }
 
     crypto.addCSourceFiles(.{
@@ -143,6 +97,7 @@ fn buildBoringCrypto(
             "-Wmissing-field-initializers",
             "-Wwrite-strings",
             "-DOPENSSL_NO_ASM",
+            "-DBORINGSSL_IMPLEMENTATION",
         },
     });
 
@@ -274,16 +229,18 @@ pub fn glob_sources_relative(
 fn shouldSkipFile(file_path: []const u8) bool {
     const filename = std.fs.path.basename(file_path);
 
-    if (std.mem.endsWith(u8, filename, "_test.cc")) return true;
-    if (std.mem.endsWith(u8, filename, "_test.c")) return true;
-    if (std.mem.endsWith(u8, filename, "test.cc")) return true;
-    if (std.mem.endsWith(u8, filename, "test.c")) return true;
+    if (std.mem.indexOf(u8, file_path, "test") != null) return true;
 
-    if (std.mem.eql(u8, filename, "gtest_main.cc")) return true;
-    if (std.mem.eql(u8, filename, "file_test_gtest.cc")) return true;
+    const skip_files = [_][]const u8{
+        "gtest_main.cc",
+        "file_test_gtest.cc",
+        "file_util.cc",
+        "file_util.c",
+    };
 
-    if (std.mem.indexOf(u8, file_path, "/test/") != null) return true;
-    if (std.mem.indexOf(u8, file_path, "\\test\\") != null) return true;
+    for (skip_files) |skip_file| {
+        if (std.mem.eql(u8, filename, skip_file)) return true;
+    }
 
     return false;
 }

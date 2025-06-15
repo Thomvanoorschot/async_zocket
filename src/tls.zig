@@ -28,12 +28,10 @@ pub const TlsClient = struct {
     handshake_complete: bool = false,
     hostname: []const u8,
 
-    // Buffers for TLS data
     encrypted_buffer: std.ArrayList(u8),
     decrypted_buffer: std.ArrayList(u8),
 
     pub fn init(allocator: std.mem.Allocator, hostname: []const u8) !*TlsClient {
-        // Initialize OpenSSL library (modern way)
         _ = c.OPENSSL_init_ssl(c.OPENSSL_INIT_LOAD_SSL_STRINGS | c.OPENSSL_INIT_LOAD_CRYPTO_STRINGS, null);
 
         const method = c.TLS_client_method();
@@ -42,28 +40,24 @@ pub const TlsClient = struct {
             return TlsError.TlsContextFailed;
         };
 
-        // Set up verification
         c.SSL_CTX_set_verify(ctx, c.SSL_VERIFY_PEER, null);
         if (c.SSL_CTX_set_default_verify_paths(ctx) != 1) {
             std.log.warn("Failed to set default verify paths", .{});
         }
 
-        // Set security level (optional, for compatibility)
-        c.SSL_CTX_set_security_level(ctx, 1);
+        _ = c.SSL_CTX_set_options(ctx, c.SSL_OP_NO_SSLv2 | c.SSL_OP_NO_SSLv3 | c.SSL_OP_NO_COMPRESSION);
 
         const ssl = c.SSL_new(ctx) orelse {
             c.SSL_CTX_free(ctx);
             return TlsError.TlsConnectionFailed;
         };
 
-        // Set hostname for SNI
         const hostname_z = try allocator.dupeZ(u8, hostname);
         defer allocator.free(hostname_z);
         if (c.SSL_set_tlsext_host_name(ssl, hostname_z.ptr) != 1) {
             std.log.warn("Failed to set SNI hostname", .{});
         }
 
-        // Create memory BIOs for non-blocking operation
         const bio_read = c.BIO_new(c.BIO_s_mem()) orelse {
             c.SSL_free(ssl);
             c.SSL_CTX_free(ctx);
@@ -91,7 +85,7 @@ pub const TlsClient = struct {
             .decrypted_buffer = std.ArrayList(u8).init(allocator),
         };
 
-        std.log.info("TLS client initialized for hostname: {s}", .{hostname});
+        std.log.info("TLS client initialized with BoringSSL for hostname: {s}", .{hostname});
         return self;
     }
 
@@ -104,11 +98,9 @@ pub const TlsClient = struct {
         self.allocator.destroy(self);
     }
 
-    /// Process incoming encrypted data and return any decrypted data
     pub fn processIncoming(self: *TlsClient, encrypted_data: []const u8) !?[]const u8 {
         if (encrypted_data.len == 0) return null;
 
-        // Feed encrypted data to SSL
         const written = c.BIO_write(self.bio_read, encrypted_data.ptr, @intCast(encrypted_data.len));
         if (written <= 0) {
             std.log.err("Failed to write to BIO", .{});
@@ -119,14 +111,11 @@ pub const TlsClient = struct {
             const handshake_result = c.SSL_do_handshake(self.ssl);
             if (handshake_result == 1) {
                 self.handshake_complete = true;
-                std.log.info("TLS handshake completed successfully", .{});
+                std.log.info("TLS handshake completed successfully with BoringSSL", .{});
 
-                // Verify certificate
                 const verify_result = c.SSL_get_verify_result(self.ssl);
                 if (verify_result != c.X509_V_OK) {
                     std.log.warn("Certificate verification failed: {}", .{verify_result});
-                    // For now, we'll continue despite verification failure
-                    // In production, you might want to fail here
                 }
             } else {
                 const ssl_error = c.SSL_get_error(self.ssl, handshake_result);
@@ -134,12 +123,10 @@ pub const TlsClient = struct {
                     std.log.err("TLS handshake failed with error: {}", .{ssl_error});
                     return TlsError.TlsHandshakeFailed;
                 }
-                // Handshake needs more data, continue
             }
         }
 
         if (self.handshake_complete) {
-            // Try to read decrypted data
             self.decrypted_buffer.clearRetainingCapacity();
             var temp_buf: [4096]u8 = undefined;
 
@@ -150,9 +137,9 @@ pub const TlsClient = struct {
                 } else {
                     const ssl_error = c.SSL_get_error(self.ssl, bytes_read);
                     if (ssl_error == c.SSL_ERROR_WANT_READ) {
-                        break; // No more data available
+                        break;
                     } else if (ssl_error == c.SSL_ERROR_WANT_WRITE) {
-                        break; // Need to send data first
+                        break;
                     } else if (ssl_error == c.SSL_ERROR_ZERO_RETURN) {
                         std.log.info("TLS connection closed cleanly", .{});
                         break;
@@ -171,7 +158,6 @@ pub const TlsClient = struct {
         return null;
     }
 
-    /// Encrypt data for sending and return any data to send over the socket
     pub fn processOutgoing(self: *TlsClient, plaintext: ?[]const u8) !?[]const u8 {
         if (plaintext) |data| {
             if (!self.handshake_complete) {
@@ -188,7 +174,6 @@ pub const TlsClient = struct {
             }
         }
 
-        // Get any data that needs to be sent over the socket
         self.encrypted_buffer.clearRetainingCapacity();
         var temp_buf: [4096]u8 = undefined;
 
@@ -208,14 +193,13 @@ pub const TlsClient = struct {
         return null;
     }
 
-    /// Start the handshake process
     pub fn startHandshake(self: *TlsClient) !?[]const u8 {
         c.SSL_set_connect_state(self.ssl);
         const handshake_result = c.SSL_do_handshake(self.ssl);
 
         if (handshake_result == 1) {
             self.handshake_complete = true;
-            std.log.info("TLS handshake completed immediately", .{});
+            std.log.info("TLS handshake completed immediately with BoringSSL", .{});
         } else {
             const ssl_error = c.SSL_get_error(self.ssl, handshake_result);
             if (ssl_error != c.SSL_ERROR_WANT_READ and ssl_error != c.SSL_ERROR_WANT_WRITE) {
