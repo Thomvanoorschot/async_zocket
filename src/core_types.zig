@@ -22,6 +22,8 @@ pub const ConnectionState = enum {
     initial,
     connecting,
     tcp_connected,
+    tls_handshake_started,
+    tls_connected,
     websocket_handshake_sent,
     websocket_connection_established,
     closing,

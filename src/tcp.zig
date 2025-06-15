@@ -3,6 +3,7 @@ const clnt = @import("client.zig");
 const xev = @import("xev");
 const wss = @import("client_wss.zig");
 const core_types = @import("core_types.zig");
+const tls = @import("tls.zig");
 
 const Client = clnt.Client;
 const Error = core_types.Error;
@@ -28,34 +29,111 @@ pub fn connect(
 fn onConnected(
     client_: ?*Client,
     l: *xev.Loop,
-    _: *xev.Completion,
+    c: *xev.Completion,
     socket: xev.TCP,
     r: xev.ConnectError!void,
 ) xev.CallbackAction {
     const client = client_.?;
     r catch |err| {
-        std.log.err("Websocket Connect error: {s}\n", .{@errorName(err)});
+        std.log.err("TCP Connect error: {s}\n", .{@errorName(err)});
         return .disarm;
     };
+
+    client.connection_state = .tcp_connected;
+
+    if (client.config.use_tls) {
+        // Initialize TLS client
+        client.tls_client = tls.TlsClient.init(client.allocator, client.config.host) catch |err| {
+            std.log.err("TLS init error: {s}\n", .{@errorName(err)});
+            return .disarm;
+        };
+
+        // Start TLS handshake
+        client.connection_state = .tls_handshake_started;
+        const handshake_data = client.tls_client.?.startHandshake() catch |err| {
+            std.log.err("TLS handshake start error: {s}\n", .{@errorName(err)});
+            return .disarm;
+        };
+
+        if (handshake_data) |data| {
+            // Send TLS handshake data
+            const queued_payload: *QueuedWrite = client.queued_write_pool.create() catch |err| {
+                std.log.err("Failed to create queued payload: {s}\n", .{@errorName(err)});
+                return .disarm;
+            };
+            queued_payload.* = .{
+                .client = client,
+                .frame = client.allocator.dupe(u8, data) catch |err| {
+                    std.log.err("Failed to duplicate TLS handshake data: {s}\n", .{@errorName(err)});
+                    client.queued_write_pool.destroy(queued_payload);
+                    return .disarm;
+                },
+            };
+            socket.queueWrite(
+                l,
+                &client.write_queue,
+                &queued_payload.req,
+                .{ .slice = queued_payload.frame },
+                QueuedWrite,
+                queued_payload,
+                onTlsHandshakeWrite,
+            );
+        } else {
+            // Start reading for TLS handshake response
+            socket.read(
+                l,
+                c,
+                .{ .slice = &client.read_buf },
+                Client,
+                client,
+                onTlsHandshakeRead,
+            );
+        }
+    } else {
+        // Original WebSocket upgrade logic
+        return startWebSocketUpgrade(client, l, socket);
+    }
+
+    return .disarm;
+}
+
+fn startWebSocketUpgrade(client: *Client, l: *xev.Loop, socket: xev.TCP) xev.CallbackAction {
     const upgrade_request = wss.createUpgradeRequest(
         client.allocator,
-        "ws.kraken.com",
-        "/v2",
-        // client.config.host,
-        // client.config.path,
+        client.config.host,
+        client.config.path,
     ) catch |err| {
         std.log.err("Failed to generate upgrade request: {s}\n", .{@errorName(err)});
         return .disarm;
     };
-    client.connection_state = .tcp_connected;
+
+    // Encrypt the upgrade request if TLS is enabled
+    const data_to_send = if (client.tls_client) |tls_client| blk: {
+        const encrypted = tls_client.processOutgoing(upgrade_request) catch |err| {
+            std.log.err("Failed to encrypt upgrade request: {s}\n", .{@errorName(err)});
+            client.allocator.free(upgrade_request);
+            return .disarm;
+        };
+        client.allocator.free(upgrade_request); // Free the original request
+        if (encrypted) |enc_data| {
+            break :blk client.allocator.dupe(u8, enc_data) catch |err| {
+                std.log.err("Failed to duplicate encrypted upgrade request: {s}\n", .{@errorName(err)});
+                return .disarm;
+            };
+        } else {
+            std.log.err("No encrypted data for upgrade request", .{});
+            return .disarm;
+        }
+    } else upgrade_request;
 
     const queued_payload: *QueuedWrite = client.queued_write_pool.create() catch |err| {
         std.log.err("Failed to create queued payload: {s}\n", .{@errorName(err)});
+        client.allocator.free(data_to_send);
         return .disarm;
     };
     queued_payload.* = .{
         .client = client,
-        .frame = upgrade_request,
+        .frame = data_to_send,
     };
     socket.queueWrite(
         l,
@@ -66,6 +144,122 @@ fn onConnected(
         queued_payload,
         onWebsocketUpgrade,
     );
+
+    return .disarm;
+}
+
+fn onTlsHandshakeWrite(
+    write_payload_: ?*QueuedWrite,
+    l: *xev.Loop,
+    c: *xev.Completion,
+    socket: xev.TCP,
+    _: xev.WriteBuffer,
+    r: xev.WriteError!usize,
+) xev.CallbackAction {
+    const write_payload = write_payload_.?;
+    const client = write_payload.client;
+    client.allocator.free(write_payload.frame);
+    client.queued_write_pool.destroy(write_payload);
+
+    _ = r catch |err| {
+        std.log.err("TLS Handshake write error: {s}\n", .{@errorName(err)});
+        return .disarm;
+    };
+
+    // Read TLS handshake response
+    socket.read(
+        l,
+        c,
+        .{ .slice = &client.read_buf },
+        Client,
+        client,
+        onTlsHandshakeRead,
+    );
+    return .disarm;
+}
+
+fn onTlsHandshakeRead(
+    client_: ?*Client,
+    l: *xev.Loop,
+    c: *xev.Completion,
+    socket: xev.TCP,
+    buf: xev.ReadBuffer,
+    r: xev.ReadError!usize,
+) xev.CallbackAction {
+    const client = client_.?;
+    const bytes_read = r catch |err| {
+        std.log.err("TLS Handshake read error: {s}\n", .{@errorName(err)});
+        closeSocket(client);
+        return .disarm;
+    };
+
+    if (bytes_read == 0) {
+        std.log.err("TLS Handshake: connection closed by server", .{});
+        closeSocket(client);
+        return .disarm;
+    }
+
+    const received_data = buf.slice[0..bytes_read];
+
+    // Process TLS handshake response
+    const decrypted_data = client.tls_client.?.processIncoming(received_data) catch |err| {
+        std.log.err("TLS handshake process error: {s}\n", .{@errorName(err)});
+        closeSocket(client);
+        return .disarm;
+    };
+
+    // Check if we need to send more handshake data
+    const outgoing_data = client.tls_client.?.processOutgoing(null) catch |err| {
+        std.log.err("TLS handshake outgoing error: {s}\n", .{@errorName(err)});
+        closeSocket(client);
+        return .disarm;
+    };
+
+    if (outgoing_data) |data| {
+        // Send more handshake data
+        const queued_payload: *QueuedWrite = client.queued_write_pool.create() catch |err| {
+            std.log.err("Failed to create queued payload: {s}\n", .{@errorName(err)});
+            return .disarm;
+        };
+        queued_payload.* = .{
+            .client = client,
+            .frame = client.allocator.dupe(u8, data) catch |err| {
+                std.log.err("Failed to duplicate TLS data: {s}\n", .{@errorName(err)});
+                client.queued_write_pool.destroy(queued_payload);
+                return .disarm;
+            },
+        };
+        socket.queueWrite(
+            l,
+            &client.write_queue,
+            &queued_payload.req,
+            .{ .slice = queued_payload.frame },
+            QueuedWrite,
+            queued_payload,
+            onTlsHandshakeWrite,
+        );
+        return .disarm;
+    }
+
+    if (client.tls_client.?.isHandshakeComplete()) {
+        // TLS handshake complete, proceed to WebSocket upgrade
+        client.connection_state = .tls_connected;
+        std.log.info("TLS handshake completed, starting WebSocket upgrade", .{});
+        return startWebSocketUpgrade(client, l, socket);
+    } else {
+        // Continue reading for more handshake data
+        socket.read(
+            l,
+            c,
+            .{ .slice = &client.read_buf },
+            Client,
+            client,
+            onTlsHandshakeRead,
+        );
+    }
+
+    // Handle any decrypted data during handshake (shouldn't happen, but just in case)
+    _ = decrypted_data;
 
     return .disarm;
 }
@@ -113,7 +307,25 @@ fn onWebsocketUpgradeRead(
         return .disarm;
     };
 
-    const response_data = buf.slice[0..bytes_read];
+    const raw_response = buf.slice[0..bytes_read];
+
+    // Decrypt the response if TLS is enabled
+    const response_data = if (client.tls_client) |tls_client| blk: {
+        const decrypted = tls_client.processIncoming(raw_response) catch |err| {
+            std.log.err("TLS decrypt error during upgrade: {s}\n", .{@errorName(err)});
+            closeSocket(client);
+            return .disarm;
+        };
+
+        if (decrypted) |data| {
+            break :blk data;
+        } else {
+            std.log.err("No decrypted data received during upgrade", .{});
+            closeSocket(client);
+            return .disarm;
+        }
+    } else raw_response;
+
     const header_end_marker = "\r\n\r\n";
     const header_end_index = std.mem.indexOf(u8, response_data, header_end_marker);
     if (header_end_index == null) {

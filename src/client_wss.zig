@@ -82,18 +82,65 @@ fn onRead(
         return .disarm;
     }
 
-    const received_data = buf.slice[0..n];
-    handleWebSocketBuffer(
-        client,
-        l,
-        c,
-        socket,
-        received_data,
-    ) catch |err| {
-        std.log.err("Error handling WS buffer: {s}\n", .{@errorName(err)});
-        closeSocket(client);
-        return .disarm;
-    };
+    const raw_data = buf.slice[0..n];
+
+    // Process through TLS if enabled
+    const websocket_data = if (client.tls_client) |tls_client| blk: {
+        const decrypted = tls_client.processIncoming(raw_data) catch |err| {
+            std.log.err("TLS decrypt error: {s}\n", .{@errorName(err)});
+            closeSocket(client);
+            return .disarm;
+        };
+
+        // Check if we need to send any outgoing TLS data
+        const outgoing = tls_client.processOutgoing(null) catch |err| {
+            std.log.err("TLS outgoing error: {s}\n", .{@errorName(err)});
+            closeSocket(client);
+            return .disarm;
+        };
+
+        if (outgoing) |data| {
+            // Queue the outgoing TLS data to be sent
+            const queued_payload: *QueuedWrite = client.queued_write_pool.create() catch |err| {
+                std.log.err("Failed to create queued payload for TLS: {s}\n", .{@errorName(err)});
+                return .disarm;
+            };
+            queued_payload.* = .{
+                .client = client,
+                .frame = client.allocator.dupe(u8, data) catch |err| {
+                    std.log.err("Failed to duplicate TLS outgoing data: {s}\n", .{@errorName(err)});
+                    client.queued_write_pool.destroy(queued_payload);
+                    return .disarm;
+                },
+            };
+            socket.queueWrite(
+                l,
+                &client.write_queue,
+                &queued_payload.req,
+                .{ .slice = queued_payload.frame },
+                QueuedWrite,
+                queued_payload,
+                onWrite,
+            );
+        }
+
+        break :blk decrypted;
+    } else raw_data;
+
+    if (websocket_data) |data| {
+        handleWebSocketBuffer(
+            client,
+            l,
+            c,
+            socket,
+            data,
+        ) catch |err| {
+            std.log.err("Error handling WS buffer: {s}\n", .{@errorName(err)});
+            closeSocket(client);
+            return .disarm;
+        };
+    }
+
     if (client.connection_state != .closing) {
         read(client);
     }
@@ -115,10 +162,23 @@ pub fn write(
         .ping, .pong => try createControlFrame(client.allocator, op, payload, true),
         else => return Error.InvalidOpCode,
     };
+
+    // Encrypt if TLS is enabled
+    const data_to_send = if (client.tls_client) |tls_client| blk: {
+        const encrypted = try tls_client.processOutgoing(frame);
+        client.allocator.free(frame); // Free the original frame
+        if (encrypted) |enc_data| {
+            break :blk try client.allocator.dupe(u8, enc_data);
+        } else {
+            // No encrypted data to send (shouldn't happen for writes)
+            return;
+        }
+    } else frame;
+
     const queued_payload: *QueuedWrite = try client.queued_write_pool.create();
     queued_payload.* = .{
         .client = client,
-        .frame = frame,
+        .frame = data_to_send,
     };
     client.socket.queueWrite(
         client.loop,

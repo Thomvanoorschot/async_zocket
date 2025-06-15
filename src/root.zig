@@ -5,6 +5,7 @@ pub const ServerOptions = @import("server.zig").ServerOptions;
 pub const ClientConnection = @import("client_connection.zig").ClientConnection;
 pub const Error = @import("core_types.zig").Error;
 pub const WebSocketOpCode = @import("core_types.zig").WebSocketOpCode;
+pub const tls = @import("tls.zig");
 
 test {
     std.testing.refAllDecls(@This());
