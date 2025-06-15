@@ -27,7 +27,7 @@ pub fn read(connection: *ClientConnection) void {
                     inner_connection.close();
                     return .disarm;
                 }
-                std.log.err("C Failed to read: {any}", .{err});
+                std.log.err("Failed to read: {any}", .{err});
                 inner_connection.close();
                 return .disarm;
             };
@@ -49,18 +49,16 @@ pub fn read(connection: *ClientConnection) void {
                     return .disarm;
                 },
                 .ping => {
-                    std.log.info("Received ping, sending pong", .{});
                     // TODO: Send pong frame back
                     return .rearm;
                 },
                 .pong => {
-                    std.log.info("Received pong", .{});
                     return .rearm;
                 },
                 .text, .binary => {
                     if (inner_connection.on_read_cb) |cb| {
                         cb(inner_connection.read_cb_ctx, frame.payload) catch |err| {
-                            std.log.err("D Failed to read: {any}", .{err});
+                            std.log.err("Failed to read: {any}", .{err});
                             inner_connection.close();
                             return .disarm;
                         };

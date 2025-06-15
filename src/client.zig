@@ -15,6 +15,8 @@ const ClientConfig = struct {
     use_tls: bool = false,
 };
 
+// TODO This is a bit of a hack
+var cancel_completion: xev.Completion = undefined;
 pub const Client = struct {
     loop: *xev.Loop,
     socket: xev.TCP,
@@ -55,7 +57,17 @@ pub const Client = struct {
         ) anyerror!void,
         callback_context: *anyopaque,
     ) !Client {
-        const address = try std.net.Address.parseIp4(config.host, config.port);
+        const address = std.net.Address.parseIp4(config.host, config.port) catch blk: {
+            const addr_list = try std.net.getAddressList(allocator, config.host, config.port);
+            defer addr_list.deinit();
+
+            if (addr_list.addrs.len == 0) {
+                return error.HostnameResolutionFailed;
+            }
+
+            break :blk addr_list.addrs[0];
+        };
+
         return .{
             .allocator = allocator,
             .loop = loop,
@@ -75,6 +87,7 @@ pub const Client = struct {
 
     pub fn deinit(client: *Client) void {
         client.connection_state = .closing;
+        client.cancelCompletion(&client.ping_completion);
         tcp.closeSocket(client);
     }
     pub fn deinitMemory(client: *Client) void {
@@ -82,10 +95,13 @@ pub const Client = struct {
             client.allocator.free(item);
         }
         client.pending_websocket_writes.deinit();
-        client.allocator.free(client.incomplete_frame_buffer);
+
+        if (client.incomplete_frame_buffer.len > 0) {
+            client.allocator.free(client.incomplete_frame_buffer);
+        }
+
         client.queued_write_pool.deinit();
 
-        // Clean up TLS client if it exists
         if (client.tls_client) |tls_client| {
             tls_client.deinit();
         }
@@ -106,6 +122,31 @@ pub const Client = struct {
 
     pub fn write(client: *Client, data: []const u8) !void {
         try wss.write(client, data, .text);
+    }
+
+    fn cancelCompletion(client: *Client, completion: *xev.Completion) void {
+        if (completion.op != .timer) {
+            return;
+        }
+        cancel_completion = .{
+            .op = .{
+                .cancel = .{
+                    .c = completion,
+                },
+            },
+            .callback = (struct {
+                fn callback(
+                    _: ?*anyopaque,
+                    _: *xev.Loop,
+                    _: *xev.Completion,
+                    r: xev.Result,
+                ) xev.CallbackAction {
+                    _ = r.cancel catch unreachable;
+                    return .disarm;
+                }
+            }).callback,
+        };
+        client.loop.add(&cancel_completion);
     }
 };
 
@@ -130,9 +171,9 @@ test "create client" {
         std.testing.allocator,
         &loop,
         .{
-            .host = "127.0.0.1",
-            .port = 8080,
-            .path = "/ws",
+            .host = "echo.websocket.events",
+            .port = 80,
+            .path = "/",
             .use_tls = false,
         },
         wrapperStruct.read_callback,
@@ -144,12 +185,10 @@ test "create client" {
     const duration_ms = 1000;
 
     while (std.time.milliTimestamp() - start_time < duration_ms) {
-        try loop.run(.once);
+        try loop.run(.no_wait);
     }
     client.deinit();
-    while (client.connection_state != .closed) {
-        try loop.run(.once);
-    }
+    try loop.run(.once);
 }
 
 test "create TLS client" {
@@ -181,26 +220,22 @@ test "create TLS client" {
     client.connect();
 
     const start_time = std.time.milliTimestamp();
-    const duration_ms = 5000; // Give more time for TLS handshake
+    const duration_ms = 2000;
 
     while (std.time.milliTimestamp() - start_time < duration_ms) {
         try loop.run(.once);
 
-        // Send a test message once connected
         if (client.connection_state == .websocket_connection_established) {
             try client.write("Hello, WSS!");
             break;
         }
     }
 
-    // Run a bit more to receive any response
     const response_start = std.time.milliTimestamp();
     while (std.time.milliTimestamp() - response_start < 2000) {
-        try loop.run(.once);
+        try loop.run(.no_wait);
     }
 
     client.deinit();
-    while (client.connection_state != .closed) {
-        try loop.run(.once);
-    }
+    try loop.run(.once);
 }

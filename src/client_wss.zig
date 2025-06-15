@@ -32,7 +32,6 @@ pub fn handleConnectionEstablished(
 
     if (body_part_start_index < response_data.len) {
         const initial_ws_data = response_data[body_part_start_index..];
-        std.log.info("Initial WS data: {s}\n", .{initial_ws_data});
         try handleWebSocketBuffer(
             client,
             client.loop,
@@ -84,7 +83,6 @@ fn onRead(
 
     const raw_data = buf.slice[0..n];
 
-    // Process through TLS if enabled
     const websocket_data = if (client.tls_client) |tls_client| blk: {
         const decrypted = tls_client.processIncoming(raw_data) catch |err| {
             std.log.err("TLS decrypt error: {s}\n", .{@errorName(err)});
@@ -92,7 +90,6 @@ fn onRead(
             return .disarm;
         };
 
-        // Check if we need to send any outgoing TLS data
         const outgoing = tls_client.processOutgoing(null) catch |err| {
             std.log.err("TLS outgoing error: {s}\n", .{@errorName(err)});
             closeSocket(client);
@@ -100,7 +97,6 @@ fn onRead(
         };
 
         if (outgoing) |data| {
-            // Queue the outgoing TLS data to be sent
             const queued_payload: *QueuedWrite = client.queued_write_pool.create() catch |err| {
                 std.log.err("Failed to create queued payload for TLS: {s}\n", .{@errorName(err)});
                 return .disarm;
@@ -163,16 +159,13 @@ pub fn write(
         else => return Error.InvalidOpCode,
     };
 
-    // Encrypt if TLS is enabled
     const data_to_send = if (client.tls_client) |tls_client| blk: {
         const encrypted = try tls_client.processOutgoing(frame);
         client.allocator.free(frame); // Free the original frame
         if (encrypted) |enc_data| {
             break :blk try client.allocator.dupe(u8, enc_data);
-        } else {
-            // No encrypted data to send (shouldn't happen for writes)
-            return;
         }
+        return;
     } else frame;
 
     const queued_payload: *QueuedWrite = try client.queued_write_pool.create();

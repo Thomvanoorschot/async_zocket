@@ -201,14 +201,12 @@ fn onTlsHandshakeRead(
 
     const received_data = buf.slice[0..bytes_read];
 
-    // Process TLS handshake response
-    const decrypted_data = client.tls_client.?.processIncoming(received_data) catch |err| {
+    _ = client.tls_client.?.processIncoming(received_data) catch |err| {
         std.log.err("TLS handshake process error: {s}\n", .{@errorName(err)});
         closeSocket(client);
         return .disarm;
     };
 
-    // Check if we need to send more handshake data
     const outgoing_data = client.tls_client.?.processOutgoing(null) catch |err| {
         std.log.err("TLS handshake outgoing error: {s}\n", .{@errorName(err)});
         closeSocket(client);
@@ -216,7 +214,6 @@ fn onTlsHandshakeRead(
     };
 
     if (outgoing_data) |data| {
-        // Send more handshake data
         const queued_payload: *QueuedWrite = client.queued_write_pool.create() catch |err| {
             std.log.err("Failed to create queued payload: {s}\n", .{@errorName(err)});
             return .disarm;
@@ -242,12 +239,9 @@ fn onTlsHandshakeRead(
     }
 
     if (client.tls_client.?.isHandshakeComplete()) {
-        // TLS handshake complete, proceed to WebSocket upgrade
         client.connection_state = .tls_connected;
-        std.log.info("TLS handshake completed, starting WebSocket upgrade", .{});
         return startWebSocketUpgrade(client, l, socket);
     } else {
-        // Continue reading for more handshake data
         socket.read(
             l,
             c,
@@ -257,9 +251,6 @@ fn onTlsHandshakeRead(
             onTlsHandshakeRead,
         );
     }
-
-    // Handle any decrypted data during handshake (shouldn't happen, but just in case)
-    _ = decrypted_data;
 
     return .disarm;
 }

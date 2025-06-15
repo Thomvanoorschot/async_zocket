@@ -79,7 +79,7 @@ pub const ClientConnection = struct {
                         inner_self.close();
                         return .disarm;
                     }
-                    std.log.err("A Failed to read: {any}", .{err});
+                    std.log.err("Failed to read: {any}", .{err});
                     inner_self.close();
                     return .disarm;
                 };
@@ -122,7 +122,7 @@ pub const ClientConnection = struct {
                 // TODO: Proably make it return something optionally
                 if (inner_self.on_read_cb) |cb| {
                     cb(inner_self.read_cb_ctx, buf.slice[0..bytes_read]) catch |err| {
-                        std.log.err("B Failed to read: {any}", .{err});
+                        std.log.err("Failed to read: {any}", .{err});
                         inner_self.close();
                         return .disarm;
                     };

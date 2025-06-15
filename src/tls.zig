@@ -85,7 +85,6 @@ pub const TlsClient = struct {
             .decrypted_buffer = std.ArrayList(u8).init(allocator),
         };
 
-        std.log.info("TLS client initialized with BoringSSL for hostname: {s}", .{hostname});
         return self;
     }
 
@@ -111,7 +110,6 @@ pub const TlsClient = struct {
             const handshake_result = c.SSL_do_handshake(self.ssl);
             if (handshake_result == 1) {
                 self.handshake_complete = true;
-                std.log.info("TLS handshake completed successfully with BoringSSL", .{});
 
                 const verify_result = c.SSL_get_verify_result(self.ssl);
                 if (verify_result != c.X509_V_OK) {
@@ -141,7 +139,6 @@ pub const TlsClient = struct {
                     } else if (ssl_error == c.SSL_ERROR_WANT_WRITE) {
                         break;
                     } else if (ssl_error == c.SSL_ERROR_ZERO_RETURN) {
-                        std.log.info("TLS connection closed cleanly", .{});
                         break;
                     } else {
                         std.log.err("SSL_read failed with error: {}", .{ssl_error});
@@ -199,7 +196,6 @@ pub const TlsClient = struct {
 
         if (handshake_result == 1) {
             self.handshake_complete = true;
-            std.log.info("TLS handshake completed immediately with BoringSSL", .{});
         } else {
             const ssl_error = c.SSL_get_error(self.ssl, handshake_result);
             if (ssl_error != c.SSL_ERROR_WANT_READ and ssl_error != c.SSL_ERROR_WANT_WRITE) {
