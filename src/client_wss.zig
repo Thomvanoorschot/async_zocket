@@ -85,14 +85,14 @@ fn onRead(
 
     const raw_data = buf.slice[0..n];
 
-    const websocket_data = if (client.tls_client) |tls_client| blk: {
-        const decrypted = tls_client.processIncoming(raw_data) catch |err| {
+    const websocket_data = if (client.tls_client != null) blk: {
+        const decrypted = client.tls_client.?.processIncoming(raw_data) catch |err| {
             std.log.err("TLS decrypt error: {s}\n", .{@errorName(err)});
             closeSocket(client);
             return .disarm;
         };
 
-        const outgoing = tls_client.processOutgoing(null) catch |err| {
+        const outgoing = client.tls_client.?.processOutgoing(null) catch |err| {
             std.log.err("TLS outgoing error: {s}\n", .{@errorName(err)});
             closeSocket(client);
             return .disarm;
@@ -161,8 +161,8 @@ pub fn write(
         else => return Error.InvalidOpCode,
     };
 
-    const data_to_send = if (client.tls_client) |tls_client| blk: {
-        const encrypted = try tls_client.processOutgoing(frame);
+    const data_to_send = if (client.tls_client != null) blk: {
+        const encrypted = try client.tls_client.?.processOutgoing(frame);
         client.allocator.free(frame);
         if (encrypted) |enc_data| {
             break :blk try client.allocator.dupe(u8, enc_data);

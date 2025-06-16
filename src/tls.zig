@@ -23,7 +23,6 @@ pub const TlsError = error{
 const BUFFER_SIZE = 4096;
 
 pub const TlsClient = struct {
-    allocator: std.mem.Allocator,
     ssl_ctx: *c.SSL_CTX,
     ssl: *c.SSL,
     bio_read: *c.BIO,
@@ -31,10 +30,12 @@ pub const TlsClient = struct {
     handshake_complete: bool = false,
     hostname: []const u8,
 
-    encrypted_buffer: std.ArrayList(u8),
-    decrypted_buffer: std.ArrayList(u8),
+    encrypted_buffer: [BUFFER_SIZE * 2]u8 = undefined,
+    encrypted_len: usize = 0,
+    decrypted_buffer: [BUFFER_SIZE * 2]u8 = undefined,
+    decrypted_len: usize = 0,
 
-    pub fn init(allocator: std.mem.Allocator, hostname: []const u8) !*TlsClient {
+    pub fn init(hostname: []const u8) !TlsClient {
         _ = c.OPENSSL_init_ssl(c.OPENSSL_INIT_LOAD_SSL_STRINGS | c.OPENSSL_INIT_LOAD_CRYPTO_STRINGS, null);
 
         const ctx = try createSslContext();
@@ -43,7 +44,7 @@ pub const TlsClient = struct {
             return err;
         };
 
-        setSniHostname(allocator, ssl, hostname) catch |err| {
+        setSniHostname(ssl, hostname) catch |err| {
             c.SSL_free(ssl);
             c.SSL_CTX_free(ctx);
             return err;
@@ -64,19 +65,15 @@ pub const TlsClient = struct {
 
         c.SSL_set_bio(ssl, bio_read, bio_write);
 
-        const self = try allocator.create(TlsClient);
-        self.* = .{
-            .allocator = allocator,
+        return .{
             .ssl_ctx = ctx,
             .ssl = ssl,
             .bio_read = bio_read,
             .bio_write = bio_write,
-            .hostname = try allocator.dupe(u8, hostname),
-            .encrypted_buffer = std.ArrayList(u8).init(allocator),
-            .decrypted_buffer = std.ArrayList(u8).init(allocator),
+            .hostname = hostname,
+            .encrypted_len = 0,
+            .decrypted_len = 0,
         };
-
-        return self;
     }
 
     fn createSslContext() !*c.SSL_CTX {
@@ -102,11 +99,17 @@ pub const TlsClient = struct {
         return ssl;
     }
 
-    fn setSniHostname(allocator: std.mem.Allocator, ssl: *c.SSL, hostname: []const u8) !void {
-        const hostname_z = try allocator.dupeZ(u8, hostname);
-        defer allocator.free(hostname_z);
+    fn setSniHostname(ssl: *c.SSL, hostname: []const u8) !void {
+        var hostname_buf: [256]u8 = undefined;
+        if (hostname.len >= hostname_buf.len) {
+            std.log.warn("Hostname too long for SNI", .{});
+            return;
+        }
 
-        if (c.SSL_set_tlsext_host_name(ssl, hostname_z.ptr) != 1) {
+        @memcpy(hostname_buf[0..hostname.len], hostname);
+        hostname_buf[hostname.len] = 0;
+
+        if (c.SSL_set_tlsext_host_name(ssl, hostname_buf[0..hostname.len :0].ptr) != 1) {
             std.log.warn("Failed to set SNI hostname", .{});
         }
     }
@@ -114,10 +117,6 @@ pub const TlsClient = struct {
     pub fn deinit(self: *TlsClient) void {
         c.SSL_free(self.ssl);
         c.SSL_CTX_free(self.ssl_ctx);
-        self.encrypted_buffer.deinit();
-        self.decrypted_buffer.deinit();
-        self.allocator.free(self.hostname);
-        self.allocator.destroy(self);
     }
 
     pub fn processIncoming(self: *TlsClient, encrypted_data: []const u8) !?[]const u8 {
@@ -164,13 +163,18 @@ pub const TlsClient = struct {
     }
 
     fn readDecryptedData(self: *TlsClient) !?[]const u8 {
-        self.decrypted_buffer.clearRetainingCapacity();
+        self.decrypted_len = 0;
         var temp_buf: [BUFFER_SIZE]u8 = undefined;
 
         const bytes_read = c.SSL_read(self.ssl, &temp_buf, temp_buf.len);
         if (bytes_read > 0) {
-            try self.decrypted_buffer.appendSlice(temp_buf[0..@intCast(bytes_read)]);
-            return self.decrypted_buffer.items;
+            const read_size = @as(usize, @intCast(bytes_read));
+            if (read_size > self.decrypted_buffer.len) {
+                return TlsError.TlsReadFailed;
+            }
+            @memcpy(self.decrypted_buffer[0..read_size], temp_buf[0..read_size]);
+            self.decrypted_len = read_size;
+            return self.decrypted_buffer[0..self.decrypted_len];
         }
 
         return try self.handleSslReadError(bytes_read);
@@ -228,18 +232,23 @@ pub const TlsClient = struct {
     }
 
     fn readFromWriteBio(self: *TlsClient) !?[]const u8 {
-        self.encrypted_buffer.clearRetainingCapacity();
+        self.encrypted_len = 0;
         var temp_buf: [BUFFER_SIZE]u8 = undefined;
 
-        while (true) {
-            const bytes_read = c.BIO_read(self.bio_write, &temp_buf, temp_buf.len);
+        while (self.encrypted_len < self.encrypted_buffer.len) {
+            const remaining = self.encrypted_buffer.len - self.encrypted_len;
+            const read_size = @min(temp_buf.len, remaining);
+
+            const bytes_read = c.BIO_read(self.bio_write, &temp_buf, @intCast(read_size));
             if (bytes_read <= 0) break;
 
-            try self.encrypted_buffer.appendSlice(temp_buf[0..@intCast(bytes_read)]);
+            const actual_read = @as(usize, @intCast(bytes_read));
+            @memcpy(self.encrypted_buffer[self.encrypted_len .. self.encrypted_len + actual_read], temp_buf[0..actual_read]);
+            self.encrypted_len += actual_read;
         }
 
-        if (self.encrypted_buffer.items.len > 0) {
-            return self.encrypted_buffer.items;
+        if (self.encrypted_len > 0) {
+            return self.encrypted_buffer[0..self.encrypted_len];
         }
 
         return null;

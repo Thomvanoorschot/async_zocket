@@ -44,7 +44,7 @@ pub const Client = struct {
     pending_websocket_writes: std.ArrayList([]const u8),
     incomplete_frame_buffer: []u8 = &[_]u8{},
 
-    tls_client: ?*tls.TlsClient = null,
+    tls_client: ?tls.TlsClient = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -101,8 +101,8 @@ pub const Client = struct {
 
         client.queued_write_pool.deinit();
 
-        if (client.tls_client) |tls_client| {
-            tls_client.deinit();
+        if (client.tls_client != null) {
+            client.tls_client.?.deinit();
         }
     }
 

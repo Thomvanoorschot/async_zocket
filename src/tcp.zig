@@ -42,7 +42,7 @@ fn onConnected(
     client.connection_state = .tcp_connected;
 
     if (client.config.use_tls) {
-        client.tls_client = tls.TlsClient.init(client.allocator, client.config.host) catch |err| {
+        client.tls_client = tls.TlsClient.init(client.config.host) catch |err| {
             std.log.err("TLS init error: {s}\n", .{@errorName(err)});
             return .disarm;
         };
@@ -104,8 +104,8 @@ fn startWebSocketUpgrade(client: *Client, l: *xev.Loop, socket: xev.TCP) xev.Cal
         return .disarm;
     };
 
-    const data_to_send = if (client.tls_client) |tls_client| blk: {
-        const encrypted = tls_client.processOutgoing(upgrade_request) catch |err| {
+    const data_to_send = if (client.tls_client != null) blk: {
+        const encrypted = client.tls_client.?.processOutgoing(upgrade_request) catch |err| {
             std.log.err("Failed to encrypt upgrade request: {s}\n", .{@errorName(err)});
             client.allocator.free(upgrade_request);
             return .disarm;
@@ -293,8 +293,8 @@ fn onWebsocketUpgradeRead(
 
     const raw_response = buf.slice[0..bytes_read];
 
-    const response_data = if (client.tls_client) |tls_client| blk: {
-        const decrypted = tls_client.processIncoming(raw_response) catch |err| {
+    const response_data = if (client.tls_client != null) blk: {
+        const decrypted = client.tls_client.?.processIncoming(raw_response) catch |err| {
             std.log.err("TLS decrypt error during upgrade: {s}\n", .{@errorName(err)});
             closeSocket(client);
             return .disarm;
