@@ -114,7 +114,18 @@ pub const Server = struct {
             client_conn.close();
             return .rearm;
         }
-        std.log.info("Accepted connection {d}/{d}", .{ self.connections.items.len, self.options.max_connections });
+
+        std.log.info("Accepted connection {}/{}", .{ self.connections.items.len, self.options.max_connections });
+
+        // Don't start TLS handshake here - let it happen when data arrives
+        // if (self.options.use_tls) {
+        //     client_conn.startTlsHandshake() catch |err| {
+        //         std.log.err("Failed to start TLS handshake: {any}", .{err});
+        //         client_conn.close();
+        //         return .rearm;
+        //     };
+        // }
+
         return self.on_accept_cb(
             self.cb_ctx,
             self.loop,
@@ -216,7 +227,13 @@ test "create TLS server" {
             payload: []const u8,
         ) !void {
             _ = context;
-            std.log.info("read_callback: {s}", .{payload});
+            std.log.info("Raw WebSocket frame data: {} bytes", .{payload.len});
+            for (payload[0..@min(16, payload.len)], 0..) |byte, i| {
+                if (i % 16 == 0) std.debug.print("\nFrame[{x:0>4}]: ", .{i});
+                std.debug.print("{x:0>2} ", .{byte});
+            }
+            std.debug.print("\n", .{});
+            return;
         }
     };
     var ws = wrapperStruct{};
@@ -237,14 +254,12 @@ test "create TLS server" {
     );
     server.accept();
 
-    // Accept
-    try loop.run(.once);
-    // Read
-    try loop.run(.once);
-    // Write
-    try loop.run(.once);
-    // Read
-    try loop.run(.once);
+    const start_time = std.time.milliTimestamp();
+    const duration_ms = 2000;
+
+    while (std.time.milliTimestamp() - start_time < duration_ms) {
+        try loop.run(.once);
+    }
 
     server.deinit();
 }

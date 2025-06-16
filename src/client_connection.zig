@@ -67,7 +67,14 @@ pub const ClientConnection = struct {
                 return error.TlsCertificateRequired;
             }
             self.tls_server = tls_server.TlsServer.init(server.options.cert_file.?, server.options.key_file.?) catch |err| {
-                std.log.err("Failed to initialize TLS server: {any}", .{err});
+                std.log.err("Failed to initialize TLS server: {}", .{err});
+                allocator.destroy(self);
+                return err;
+            };
+
+            // Initialize the connection-specific SSL state
+            self.tls_server.?.initConnection() catch |err| {
+                std.log.err("Failed to initialize TLS connection: {}", .{err});
                 allocator.destroy(self);
                 return err;
             };
@@ -82,6 +89,20 @@ pub const ClientConnection = struct {
         }
         self.queued_write_pool.deinit();
     }
+
+    pub fn startTlsHandshake(self: *Self) !void {
+        if (self.tls_server) |*tls| {
+            const handshake_data = tls.startHandshake() catch |err| {
+                std.log.err("Failed to start TLS handshake: {any}", .{err});
+                return err;
+            };
+
+            if (handshake_data) |data| {
+                try self.sendTlsData(data);
+            }
+        }
+    }
+
     pub fn read(
         self: *Self,
     ) void {
@@ -90,13 +111,14 @@ pub const ClientConnection = struct {
                 self_: ?*Self,
                 _: *Loop,
                 _: *Completion,
-                socket: TCP,
+                _: TCP,
                 buf: xev.ReadBuffer,
                 r: xev.ReadError!usize,
             ) xev.CallbackAction {
                 const inner_self = self_ orelse unreachable;
                 const bytes_read = r catch |err| {
                     if (err == error.ConnectionResetByPeer) {
+                        std.log.info("Connection reset by peer", .{});
                         inner_self.close();
                         return .disarm;
                     }
@@ -104,50 +126,104 @@ pub const ClientConnection = struct {
                     inner_self.close();
                     return .disarm;
                 };
-                if (!inner_self.has_upgraded) {
-                    const upgrade_response = server_wss.createUpgradeResponse(
-                        inner_self.allocator,
-                        buf.slice[0..bytes_read],
-                    ) catch |err| {
-                        std.log.err("Failed to create upgrade response: {any}", .{err});
-                        inner_self.close();
-                        return .disarm;
-                    };
-                    const queued_payload: *QueuedWrite = inner_self.queued_write_pool.create() catch {
-                        inner_self.allocator.free(upgrade_response);
-                        inner_self.close();
-                        return .disarm;
-                    };
-                    queued_payload.* = .{
-                        .client_connection = inner_self,
-                        .payload = upgrade_response,
-                    };
-
-                    socket.queueWrite(
-                        inner_self.server.loop,
-                        &inner_self.write_queue,
-                        &queued_payload.req,
-                        .{ .slice = queued_payload.payload },
-                        QueuedWrite,
-                        queued_payload,
-                        upgradeWriteCallback,
-                    );
-                    return .disarm;
-                }
 
                 if (bytes_read == 0) {
+                    std.log.info("Connection closed (0 bytes read)", .{});
                     inner_self.close();
                     return .disarm;
                 }
 
-                // TODO: Proably make it return something optionally
-                if (inner_self.on_read_cb) |cb| {
-                    cb(inner_self.read_cb_ctx, buf.slice[0..bytes_read]) catch |err| {
-                        std.log.err("Failed to read: {any}", .{err});
+                std.log.info("Received {d} bytes, TLS enabled: {}, has_upgraded: {}", .{ bytes_read, inner_self.tls_server != null, inner_self.has_upgraded });
+
+                // Handle TLS if enabled
+                var processed_data: ?[]const u8 = null;
+                if (inner_self.tls_server) |*tls| {
+                    std.log.info("Processing TLS data, handshake complete: {}", .{tls.isHandshakeComplete()});
+
+                    // Process incoming encrypted data
+                    const decrypted = tls.processIncoming(buf.slice[0..bytes_read]) catch |err| {
+                        std.log.err("TLS processing failed: {}", .{err});
+                        // Don't close immediately, log the error and try to continue
+                        if (err == tls_server.TlsError.TlsHandshakeFailed or
+                            err == tls_server.TlsError.TlsConnectionClosed)
+                        {
+                            inner_self.close();
+                            return .disarm;
+                        }
+                        // For other errors, try to continue
+                        inner_self.read();
+                        return .disarm;
+                    };
+
+                    // Always check for outgoing data after processing incoming data
+                    const encrypted_response = tls.processOutgoing(null) catch |err| {
+                        std.log.err("TLS outgoing processing failed: {}", .{err});
                         inner_self.close();
                         return .disarm;
                     };
+
+                    if (encrypted_response) |data| {
+                        std.log.info("Sending TLS response: {} bytes (handshake complete: {})", .{ data.len, tls.isHandshakeComplete() });
+                        inner_self.sendTlsData(data) catch |err| {
+                            std.log.err("Failed to send TLS response: {}", .{err});
+                            inner_self.close();
+                            return .disarm;
+                        };
+                    }
+
+                    // Update handshake status after processing
+                    const was_handshake_complete = inner_self.tls_handshake_complete;
+                    inner_self.tls_handshake_complete = tls.isHandshakeComplete();
+
+                    if (!was_handshake_complete and inner_self.tls_handshake_complete) {
+                        std.log.info("TLS handshake just completed!", .{});
+                    }
+
+                    if (decrypted) |data| {
+                        std.log.info("TLS decrypted {} bytes: {s}", .{ data.len, data });
+                        processed_data = data;
+                    } else {
+                        std.log.info("No decrypted data yet, handshake complete: {}", .{tls.isHandshakeComplete()});
+                        // Continue reading for more data
+                        inner_self.read();
+                        return .disarm;
+                    }
+                } else {
+                    processed_data = buf.slice[0..bytes_read];
                 }
+
+                if (processed_data) |data| {
+                    if (!inner_self.has_upgraded) {
+                        std.log.info("Processing WebSocket upgrade with {d} bytes", .{data.len});
+                        const upgrade_response = server_wss.createUpgradeResponse(
+                            inner_self.allocator,
+                            data,
+                        ) catch |err| {
+                            std.log.err("Failed to create upgrade response: {any}", .{err});
+                            inner_self.close();
+                            return .disarm;
+                        };
+
+                        inner_self.sendResponse(upgrade_response, upgradeWriteCallback) catch |err| {
+                            std.log.err("Failed to send upgrade response: {any}", .{err});
+                            inner_self.close();
+                            return .disarm;
+                        };
+                        return .disarm;
+                    }
+
+                    // Handle WebSocket frames
+                    if (inner_self.on_read_cb) |cb| {
+                        cb(inner_self.read_cb_ctx, data) catch |err| {
+                            std.log.err("Failed to process WebSocket data: {any}", .{err});
+                            inner_self.close();
+                            return .disarm;
+                        };
+                    }
+                }
+
+                // Continue reading
+                inner_self.read();
                 return .disarm;
             }
         }.inner;
@@ -166,10 +242,35 @@ pub const ClientConnection = struct {
         op: core_types.WebSocketOpCode,
         data: []const u8,
     ) !void {
+        const frame_data = try wss_frame.createTextFrame(self.allocator, data, op, false);
+        defer self.allocator.free(frame_data);
+
+        if (self.tls_server) |*tls| {
+            if (!tls.isHandshakeComplete()) {
+                return error.TlsHandshakeNotComplete;
+            }
+
+            // Encrypt the frame data
+            const encrypted_data = tls.processOutgoing(frame_data) catch |err| {
+                std.log.err("TLS encryption failed: {any}", .{err});
+                return err;
+            };
+
+            if (encrypted_data) |encrypted| {
+                try self.sendTlsData(encrypted);
+            }
+        } else {
+            try self.sendPlainData(frame_data);
+        }
+    }
+
+    fn sendTlsData(self: *Self, data: []const u8) !void {
         const queued_payload: *QueuedWrite = try self.queued_write_pool.create();
+        const payload_copy = try self.allocator.dupe(u8, data);
+
         queued_payload.* = .{
             .client_connection = self,
-            .payload = try wss_frame.createTextFrame(self.allocator, data, op, false),
+            .payload = payload_copy,
         };
 
         self.socket.queueWrite(
@@ -180,6 +281,72 @@ pub const ClientConnection = struct {
             QueuedWrite,
             queued_payload,
             internalWriteCallback,
+        );
+    }
+
+    fn sendPlainData(self: *Self, data: []const u8) !void {
+        const queued_payload: *QueuedWrite = try self.queued_write_pool.create();
+        const payload_copy = try self.allocator.dupe(u8, data);
+
+        queued_payload.* = .{
+            .client_connection = self,
+            .payload = payload_copy,
+        };
+
+        self.socket.queueWrite(
+            self.server.loop,
+            &self.write_queue,
+            &queued_payload.req,
+            .{ .slice = queued_payload.payload },
+            QueuedWrite,
+            queued_payload,
+            internalWriteCallback,
+        );
+    }
+
+    fn sendResponse(self: *Self, response: []u8, callback: fn (?*QueuedWrite, *Loop, *Completion, TCP, xev.WriteBuffer, xev.WriteError!usize) xev.CallbackAction) !void {
+        var final_response: []u8 = undefined;
+
+        if (self.tls_server) |*tls| {
+            if (!tls.isHandshakeComplete()) {
+                std.log.err("Attempting to send response before TLS handshake complete", .{});
+                self.allocator.free(response);
+                return error.TlsHandshakeNotComplete;
+            }
+
+            std.log.info("Encrypting response: {d} bytes", .{response.len});
+            // Encrypt the response
+            const encrypted_response = tls.processOutgoing(response) catch |err| {
+                self.allocator.free(response);
+                return err;
+            };
+
+            if (encrypted_response) |encrypted| {
+                std.log.info("Encrypted response: {d} bytes", .{encrypted.len});
+                final_response = try self.allocator.dupe(u8, encrypted);
+                self.allocator.free(response);
+            } else {
+                self.allocator.free(response);
+                return error.TlsEncryptionFailed;
+            }
+        } else {
+            final_response = response;
+        }
+
+        const queued_payload: *QueuedWrite = try self.queued_write_pool.create();
+        queued_payload.* = .{
+            .client_connection = self,
+            .payload = final_response,
+        };
+
+        self.socket.queueWrite(
+            self.server.loop,
+            &self.write_queue,
+            &queued_payload.req,
+            .{ .slice = queued_payload.payload },
+            QueuedWrite,
+            queued_payload,
+            callback,
         );
     }
 
