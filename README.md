@@ -185,17 +185,17 @@ try loop.run(.until_done);
 🚀 **Production Ready** - The library implements a complete WebSocket solution with both client and server capabilities.
 
 **Implemented Features:**
-- ✅ Full WebSocket protocol (RFC 6455) compliance
-- ✅ Client and server implementations
-- ✅ All frame types (Text, Binary, Control frames)
-- ✅ Proper masking and unmasking
-- ✅ Connection management and pooling
-- ✅ Asynchronous I/O with xev
-- ✅ SSL/TLS support for client
+- Full WebSocket protocol (RFC 6455) compliance
+- Client and server implementations
+- All frame types (Text, Binary, Control frames)
+- Proper masking and unmasking
+- Connection management and pooling
+- Asynchronous I/O with xev
+- SSL/TLS support for client
 
 **Upcoming Features:**
-- 🔄 Fragmented message support
-- 🔄 SSL/TLS support for server
+- Fragmented message support
+- SSL/TLS support for server
 
 ## Requirements
 
