@@ -41,6 +41,9 @@ pub const ClientConnection = struct {
     tls_server: ?tls_server.TlsServer = null,
     tls_handshake_complete: bool = false,
 
+    // Add a field to handle incomplete frames
+    incomplete_frame_buffer: []u8 = &[_]u8{},
+
     const Self = @This();
 
     pub fn init(
@@ -84,6 +87,9 @@ pub const ClientConnection = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        if (self.incomplete_frame_buffer.len > 0) {
+            self.allocator.free(self.incomplete_frame_buffer);
+        }
         if (self.tls_server != null) {
             self.tls_server.?.deinit();
         }
@@ -212,14 +218,12 @@ pub const ClientConnection = struct {
                         return .disarm;
                     }
 
-                    // Handle WebSocket frames
-                    if (inner_self.on_read_cb) |cb| {
-                        cb(inner_self.read_cb_ctx, data) catch |err| {
-                            std.log.err("Failed to process WebSocket data: {any}", .{err});
-                            inner_self.close();
-                            return .disarm;
-                        };
-                    }
+                    // Handle WebSocket frames - call handleWebSocketData instead of user callback
+                    inner_self.handleWebSocketData(data) catch |err| {
+                        std.log.err("Failed to process WebSocket data: {any}", .{err});
+                        inner_self.close();
+                        return .disarm;
+                    };
                 }
 
                 // Continue reading
@@ -373,6 +377,99 @@ pub const ClientConnection = struct {
         // }
         return .disarm;
     }
+
+    // Add a WebSocket frame handler function
+    fn handleWebSocketData(self: *Self, data: []const u8) !void {
+        // Add debugging to see the raw bytes
+        std.log.info("Handling WebSocket data: {} bytes", .{data.len});
+        if (data.len > 0) {
+            // Log first few bytes in hex format for debugging
+            const preview_len = @min(data.len, 16);
+            var hex_buf: [64]u8 = undefined;
+            var hex_len: usize = 0;
+            for (data[0..preview_len]) |byte| {
+                const written = std.fmt.bufPrint(hex_buf[hex_len..], "{x:0>2} ", .{byte}) catch break;
+                hex_len += written.len;
+            }
+            std.log.info("Raw WebSocket data (hex): {s}", .{hex_buf[0..hex_len]});
+        }
+
+        var remaining_buffer = data;
+
+        // If we have incomplete frame data from previous reads, combine it
+        if (self.incomplete_frame_buffer.len > 0) {
+            remaining_buffer = try std.mem.concat(self.allocator, u8, &.{ self.incomplete_frame_buffer, remaining_buffer });
+            self.allocator.free(self.incomplete_frame_buffer);
+            self.incomplete_frame_buffer = &[_]u8{};
+            std.log.info("Combined with incomplete buffer, total: {} bytes", .{remaining_buffer.len});
+        }
+
+        while (remaining_buffer.len > 0) {
+            // Add more detailed debugging before parsing
+            if (remaining_buffer.len >= 2) {
+                const first_byte = remaining_buffer[0];
+                const second_byte = remaining_buffer[1];
+                const fin = (first_byte & 0x80) != 0;
+                const opcode_u8 = first_byte & 0x0F;
+                const masked = (second_byte & 0x80) != 0;
+                const payload_len = second_byte & 0x7F;
+
+                std.log.info("Frame header: FIN={}, opcode=0x{x}, masked={}, payload_len={}", .{ fin, opcode_u8, masked, payload_len });
+            }
+
+            const frame = wss_frame.WebSocketFrame.parse(remaining_buffer, self.allocator) catch |err| {
+                if (err == error.InsufficientData) {
+                    // Store incomplete frame data for next read
+                    self.incomplete_frame_buffer = try self.allocator.dupe(u8, remaining_buffer);
+                    std.log.info("Storing {} bytes for next read (insufficient data)", .{remaining_buffer.len});
+                    break;
+                }
+                std.log.err("Error parsing WebSocket frame: {any}", .{err});
+                if (remaining_buffer.len >= 8) {
+                    std.log.err("Problematic data length: {}, first 8 bytes: {any}", .{ remaining_buffer.len, remaining_buffer[0..8] });
+                } else {
+                    std.log.err("Problematic data length: {}, all bytes: {any}", .{ remaining_buffer.len, remaining_buffer });
+                }
+                return err;
+            };
+
+            std.log.info("Successfully parsed frame: opcode={}, payload_len={}", .{ frame.opcode, frame.payload.len });
+
+            // Handle the frame based on its opcode
+            switch (frame.opcode) {
+                .text, .binary => {
+                    // Call the ORIGINAL user callback, not handleWebSocketData again!
+                    if (self.on_read_cb) |cb| {
+                        std.log.info("Calling user callback with payload: {s}", .{frame.payload});
+                        try cb(self.read_cb_ctx, frame.payload);
+                    }
+                },
+                .close => {
+                    var mutable_frame = frame;
+                    mutable_frame.deinit(self.allocator);
+                    self.close();
+                    return;
+                },
+                .ping => {
+                    // Send pong response
+                    try self.write(.pong, frame.payload);
+                },
+                .pong => {
+                    // Handle pong (usually just log or ignore)
+                    std.log.debug("Received pong frame", .{});
+                },
+                else => {
+                    std.log.warn("Received unsupported frame type: {}", .{frame.opcode});
+                },
+            }
+
+            var mutable_frame = frame;
+            mutable_frame.deinit(self.allocator);
+            remaining_buffer = remaining_buffer[frame.total_frame_size..];
+        }
+    }
+
+    // Modify the upgradeWriteCallback to set up WebSocket frame handling
     fn upgradeWriteCallback(
         write_payload_: ?*QueuedWrite,
         _: *Loop,
@@ -392,12 +489,15 @@ pub const ClientConnection = struct {
             return .disarm;
         };
         self.has_upgraded = true;
-        // if (!self.keep_alive) {
-        //     self.close();
-        // }
-        server_wss.read(self);
+
+        // Remove the problematic callback setup that was causing recursion
+        // The callback should already be set up to receive the final payload
+
+        // Continue reading (the read loop will now handle WebSocket frames properly)
+        self.read();
         return .disarm;
     }
+
     pub fn setReadCallback(
         self: *Self,
         on_read_ctx: *anyopaque,
