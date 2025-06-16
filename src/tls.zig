@@ -75,6 +75,57 @@ pub const TlsClient = struct {
             .decrypted_len = 0,
         };
     }
+    pub fn deinit(self: *TlsClient) void {
+        c.SSL_free(self.ssl);
+        c.SSL_CTX_free(self.ssl_ctx);
+    }
+
+    pub fn startHandshake(self: *TlsClient) !?[]const u8 {
+        c.SSL_set_connect_state(self.ssl);
+        const handshake_result = c.SSL_do_handshake(self.ssl);
+
+        if (handshake_result == 1) {
+            self.handshake_complete = true;
+        } else {
+            const ssl_error = c.SSL_get_error(self.ssl, handshake_result);
+            if (ssl_error != c.SSL_ERROR_WANT_READ and ssl_error != c.SSL_ERROR_WANT_WRITE) {
+                std.log.err("TLS handshake start failed with error: {}", .{ssl_error});
+                return TlsError.TlsHandshakeFailed;
+            }
+        }
+
+        return try self.processOutgoing(null);
+    }
+
+    pub fn processIncoming(self: *TlsClient, encrypted_data: []const u8) !?[]const u8 {
+        if (encrypted_data.len == 0) return null;
+
+        const written = c.BIO_write(self.bio_read, encrypted_data.ptr, @intCast(encrypted_data.len));
+        if (written <= 0) {
+            std.log.err("Failed to write to BIO", .{});
+            return TlsError.TlsReadFailed;
+        }
+
+        if (!self.handshake_complete) {
+            try self.performHandshake();
+        }
+
+        if (!self.handshake_complete) return null;
+
+        return try self.readDecryptedData();
+    }
+
+    pub fn processOutgoing(self: *TlsClient, plaintext: ?[]const u8) !?[]const u8 {
+        if (plaintext) |data| {
+            try self.writeEncryptedData(data);
+        }
+
+        return self.readFromWriteBio();
+    }
+
+    pub fn isHandshakeComplete(self: *TlsClient) bool {
+        return self.handshake_complete;
+    }
 
     fn createSslContext() !*c.SSL_CTX {
         const method = c.TLS_client_method();
@@ -112,29 +163,6 @@ pub const TlsClient = struct {
         if (c.SSL_set_tlsext_host_name(ssl, hostname_buf[0..hostname.len :0].ptr) != 1) {
             std.log.warn("Failed to set SNI hostname", .{});
         }
-    }
-
-    pub fn deinit(self: *TlsClient) void {
-        c.SSL_free(self.ssl);
-        c.SSL_CTX_free(self.ssl_ctx);
-    }
-
-    pub fn processIncoming(self: *TlsClient, encrypted_data: []const u8) !?[]const u8 {
-        if (encrypted_data.len == 0) return null;
-
-        const written = c.BIO_write(self.bio_read, encrypted_data.ptr, @intCast(encrypted_data.len));
-        if (written <= 0) {
-            std.log.err("Failed to write to BIO", .{});
-            return TlsError.TlsReadFailed;
-        }
-
-        if (!self.handshake_complete) {
-            try self.performHandshake();
-        }
-
-        if (!self.handshake_complete) return null;
-
-        return try self.readDecryptedData();
     }
 
     fn performHandshake(self: *TlsClient) !void {
@@ -205,14 +233,6 @@ pub const TlsClient = struct {
         std.log.err("OpenSSL error: {s}", .{std.mem.sliceTo(&err_buf, 0)});
     }
 
-    pub fn processOutgoing(self: *TlsClient, plaintext: ?[]const u8) !?[]const u8 {
-        if (plaintext) |data| {
-            try self.writeEncryptedData(data);
-        }
-
-        return self.readFromWriteBio();
-    }
-
     fn writeEncryptedData(self: *TlsClient, data: []const u8) !void {
         if (!self.handshake_complete) {
             std.log.warn("Attempt to encrypt data before handshake complete", .{});
@@ -224,7 +244,7 @@ pub const TlsClient = struct {
 
         const ssl_error = c.SSL_get_error(self.ssl, bytes_written);
         if (ssl_error == c.SSL_ERROR_WANT_READ or ssl_error == c.SSL_ERROR_WANT_WRITE) {
-            return; // Acceptable, will retry
+            return;
         }
 
         std.log.err("SSL_write failed with error: {}", .{ssl_error});
@@ -252,26 +272,5 @@ pub const TlsClient = struct {
         }
 
         return null;
-    }
-
-    pub fn startHandshake(self: *TlsClient) !?[]const u8 {
-        c.SSL_set_connect_state(self.ssl);
-        const handshake_result = c.SSL_do_handshake(self.ssl);
-
-        if (handshake_result == 1) {
-            self.handshake_complete = true;
-        } else {
-            const ssl_error = c.SSL_get_error(self.ssl, handshake_result);
-            if (ssl_error != c.SSL_ERROR_WANT_READ and ssl_error != c.SSL_ERROR_WANT_WRITE) {
-                std.log.err("TLS handshake start failed with error: {}", .{ssl_error});
-                return TlsError.TlsHandshakeFailed;
-            }
-        }
-
-        return try self.processOutgoing(null);
-    }
-
-    pub fn isHandshakeComplete(self: *TlsClient) bool {
-        return self.handshake_complete;
     }
 };
