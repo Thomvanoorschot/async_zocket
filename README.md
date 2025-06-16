@@ -84,6 +84,7 @@ var client = try AsyncZocket.Client.init(
         .host = "127.0.0.1",
         .port = 8080,
         .path = "/ws",
+        .use_tls = true
     },
     wrapperStruct.read_callback,
     @ptrCast(&ws)
@@ -175,9 +176,11 @@ try loop.run(.until_done);
 - `host: []const u8` - Server hostname or IP address
 - `port: u16` - Server port number
 - `path: []const u8` - WebSocket endpoint path
+- `use_tls: bool` - Encrypts traffic
 
 **ServerOptions:**
-- `address: std.net.Address` - Server bind address
+- `host: []const u8` - Server hostname or IP address
+- `port: u16` - Server port number
 - `max_connections: u31` - Maximum concurrent connections (default: 1024)
 
 ## Project Status
