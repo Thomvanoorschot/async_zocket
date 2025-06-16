@@ -42,13 +42,33 @@ pub fn read(connection: *ClientConnection) void {
                 inner_connection.close();
                 return .disarm;
             }
-            const payload_copy = inner_connection.allocator.dupe(u8, frame.payload) catch {
-                std.log.err("Failed to dupe payload", .{});
-                inner_connection.close();
-                return .disarm;
-            };
-            // TODO: Proably make it return something optionally
-            inner_connection.on_read_cb(inner_connection.cb_ctx, payload_copy);
+
+            switch (frame.opcode) {
+                .close => {
+                    inner_connection.close();
+                    return .disarm;
+                },
+                .ping => {
+                    // TODO: Send pong frame back
+                    return .rearm;
+                },
+                .pong => {
+                    return .rearm;
+                },
+                .text, .binary => {
+                    if (inner_connection.on_read_cb) |cb| {
+                        cb(inner_connection.read_cb_ctx, frame.payload) catch |err| {
+                            std.log.err("Failed to read: {any}", .{err});
+                            inner_connection.close();
+                            return .disarm;
+                        };
+                    }
+                },
+                else => {
+                    std.log.warn("Received unknown frame type: {}", .{frame.opcode});
+                    return .rearm;
+                },
+            }
             return .rearm;
         }
     }.inner;

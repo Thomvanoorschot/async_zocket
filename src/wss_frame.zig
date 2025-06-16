@@ -120,7 +120,9 @@ pub const WebSocketFrame = struct {
             }
         }
 
-        size += 4;
+        if (self.masked) {
+            size += 4;
+        }
         size += self.payload.len;
 
         return size;
@@ -139,31 +141,35 @@ pub const WebSocketFrame = struct {
 
         var index: usize = 1;
 
+        const mask_bit: u8 = if (self.masked) 0x80 else 0;
+
         if (self.payload.len <= 125) {
-            frame[index] = @as(u8, @intCast(self.payload.len)) |
-                (@as(u8, 0x80));
+            frame[index] = @as(u8, @intCast(self.payload.len)) | mask_bit;
             index += 1;
         } else if (self.payload.len <= 65535) {
-            frame[index] = 126 | (@as(u8, 0x80));
+            frame[index] = 126 | mask_bit;
             frame[index + 1] = @as(u8, @intCast((self.payload.len >> 8) & 0xFF));
             frame[index + 2] = @as(u8, @intCast(self.payload.len & 0xFF));
             index += 3;
         } else {
-            frame[index] = 127 | (@as(u8, 0x80));
+            frame[index] = 127 | mask_bit;
             std.mem.writeInt(u64, frame[index + 1 .. index + 9][0..8], @as(u64, self.payload.len), .big);
             index += 9;
         }
 
-        @memcpy(frame[index .. index + 4], &self.masking_key);
-        index += 4;
+        if (self.masked) {
+            @memcpy(frame[index .. index + 4], &self.masking_key);
+            index += 4;
 
-        for (self.payload, 0..) |byte, i| {
-            frame[index + i] = byte ^ self.masking_key[i % 4];
+            for (self.payload, 0..) |byte, i| {
+                frame[index + i] = byte ^ self.masking_key[i % 4];
+            }
+        } else {
+            @memcpy(frame[index .. index + self.payload.len], self.payload);
         }
 
         return frame;
     }
-
     pub fn deinit(self: *WebSocketFrame, allocator: std.mem.Allocator) void {
         if (self.outgoing or self.masked) {
             allocator.free(self.payload);
@@ -196,20 +202,27 @@ pub const WebSocketFrame = struct {
     }
 };
 
-pub fn createTextFrame(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+pub fn createTextFrame(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    op: WebSocketOpCode,
+    masked: bool,
+) ![]u8 {
     const frame = WebSocketFrame{
         .fin = true,
-        .opcode = .text,
+        .opcode = op,
+        .masked = masked,
         .payload = text,
         .outgoing = true,
     };
     return frame.serialize(allocator);
 }
 
-pub fn createControlFrame(allocator: std.mem.Allocator, op_code: WebSocketOpCode, payload: []const u8) ![]u8 {
+pub fn createControlFrame(allocator: std.mem.Allocator, op_code: WebSocketOpCode, payload: []const u8, masked: bool) ![]u8 {
     const frame = WebSocketFrame{
         .fin = true,
         .opcode = op_code,
+        .masked = masked,
         .payload = payload,
         .outgoing = true,
     };

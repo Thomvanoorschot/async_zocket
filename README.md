@@ -137,8 +137,9 @@ var server = try AsyncZocket.Server.init(
     std.heap.page_allocator,
     &loop,
     .{
-        .address = try std.net.Address.parseIp4("127.0.0.1", 8080),
-        .max_connections = 100,
+        .host = "127.0.0.1",
+        .port = 8081,
+        .max_connections = 10,
     },
     @ptrCast(&ws),
     wrapperStruct.accept_callback,
@@ -184,16 +185,17 @@ try loop.run(.until_done);
 🚀 **Production Ready** - The library implements a complete WebSocket solution with both client and server capabilities.
 
 **Implemented Features:**
-- ✅ Full WebSocket protocol (RFC 6455) compliance
-- ✅ Client and server implementations
-- ✅ All frame types (Text, Binary, Control frames)
-- ✅ Proper masking and unmasking
-- ✅ Connection management and pooling
-- ✅ Asynchronous I/O with xev
+- Full WebSocket protocol (RFC 6455) compliance
+- Client and server implementations
+- All frame types (Text, Binary, Control frames)
+- Proper masking and unmasking
+- Connection management and pooling
+- Asynchronous I/O with xev
+- SSL/TLS support for client
 
 **Upcoming Features:**
-- 🔄 Fragmented message support
-- 🔄 SSL/TLS support (WSS)
+- Fragmented message support
+- SSL/TLS support for server
 
 ## Requirements
 

@@ -32,7 +32,6 @@ pub fn handleConnectionEstablished(
 
     if (body_part_start_index < response_data.len) {
         const initial_ws_data = response_data[body_part_start_index..];
-        std.log.info("Initial WS data: {s}\n", .{initial_ws_data});
         try handleWebSocketBuffer(
             client,
             client.loop,
@@ -82,18 +81,62 @@ fn onRead(
         return .disarm;
     }
 
-    const received_data = buf.slice[0..n];
-    handleWebSocketBuffer(
-        client,
-        l,
-        c,
-        socket,
-        received_data,
-    ) catch |err| {
-        std.log.err("Error handling WS buffer: {s}\n", .{@errorName(err)});
-        closeSocket(client);
-        return .disarm;
-    };
+    const raw_data = buf.slice[0..n];
+
+    const websocket_data = if (client.tls_client) |tls_client| blk: {
+        const decrypted = tls_client.processIncoming(raw_data) catch |err| {
+            std.log.err("TLS decrypt error: {s}\n", .{@errorName(err)});
+            closeSocket(client);
+            return .disarm;
+        };
+
+        const outgoing = tls_client.processOutgoing(null) catch |err| {
+            std.log.err("TLS outgoing error: {s}\n", .{@errorName(err)});
+            closeSocket(client);
+            return .disarm;
+        };
+
+        if (outgoing) |data| {
+            const queued_payload: *QueuedWrite = client.queued_write_pool.create() catch |err| {
+                std.log.err("Failed to create queued payload for TLS: {s}\n", .{@errorName(err)});
+                return .disarm;
+            };
+            queued_payload.* = .{
+                .client = client,
+                .frame = client.allocator.dupe(u8, data) catch |err| {
+                    std.log.err("Failed to duplicate TLS outgoing data: {s}\n", .{@errorName(err)});
+                    client.queued_write_pool.destroy(queued_payload);
+                    return .disarm;
+                },
+            };
+            socket.queueWrite(
+                l,
+                &client.write_queue,
+                &queued_payload.req,
+                .{ .slice = queued_payload.frame },
+                QueuedWrite,
+                queued_payload,
+                onWrite,
+            );
+        }
+
+        break :blk decrypted;
+    } else raw_data;
+
+    if (websocket_data) |data| {
+        handleWebSocketBuffer(
+            client,
+            l,
+            c,
+            socket,
+            data,
+        ) catch |err| {
+            std.log.err("Error handling WS buffer: {s}\n", .{@errorName(err)});
+            closeSocket(client);
+            return .disarm;
+        };
+    }
+
     if (client.connection_state != .closing) {
         read(client);
     }
@@ -111,14 +154,24 @@ pub fn write(
         return;
     }
     const frame = switch (op) {
-        .text => try createTextFrame(client.allocator, payload),
-        .ping, .pong => try createControlFrame(client.allocator, op, payload),
+        .text => try createTextFrame(client.allocator, payload, op, true),
+        .ping, .pong => try createControlFrame(client.allocator, op, payload, true),
         else => return Error.InvalidOpCode,
     };
+
+    const data_to_send = if (client.tls_client) |tls_client| blk: {
+        const encrypted = try tls_client.processOutgoing(frame);
+        client.allocator.free(frame); // Free the original frame
+        if (encrypted) |enc_data| {
+            break :blk try client.allocator.dupe(u8, enc_data);
+        }
+        return;
+    } else frame;
+
     const queued_payload: *QueuedWrite = try client.queued_write_pool.create();
     queued_payload.* = .{
         .client = client,
-        .frame = frame,
+        .frame = data_to_send,
     };
     client.socket.queueWrite(
         client.loop,
@@ -179,7 +232,7 @@ fn handleWebSocketBuffer(
         client.allocator.free(client.incomplete_frame_buffer);
         client.incomplete_frame_buffer = &[_]u8{};
     }
-    
+
     while (remaining_buffer.len > 0) {
         const frame = wss_frame.WebSocketFrame.parse(remaining_buffer, client.allocator) catch |err| {
             if (err == error.InsufficientData) {
@@ -230,10 +283,12 @@ fn handleDataFrame(
     fin: bool,
     payload: []const u8,
 ) !void {
-    if (!fin) {
-        return Error.CanNotHandleFragmentedMessages;
+    if (client.connection_state == .websocket_connection_established) {
+        if (!fin) {
+            return Error.CanNotHandleFragmentedMessages;
+        }
+        try client.read_callback(client.callback_context, payload);
     }
-    try client.read_callback(client.callback_context, payload);
 }
 
 fn handleControlFrame(

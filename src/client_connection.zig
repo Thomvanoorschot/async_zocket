@@ -3,6 +3,7 @@ const xev = @import("xev");
 const svr = @import("server.zig");
 const wss_frame = @import("wss_frame.zig");
 const server_wss = @import("server_wss.zig");
+const core_types = @import("core_types.zig");
 
 const TCP = xev.TCP;
 const Completion = xev.Completion;
@@ -25,11 +26,12 @@ pub const ClientConnection = struct {
     write_queue: xev.WriteQueue,
     queued_write_pool: std.heap.MemoryPool(QueuedWrite),
 
-    cb_ctx: *anyopaque = undefined,
-    on_read_cb: *const fn (
+    read_cb_ctx: *anyopaque = undefined,
+    on_read_cb: ?*const fn (
         self_: ?*anyopaque,
         payload: []const u8,
-    ) void,
+    ) anyerror!void = null,
+    close_cb_ctx: *anyopaque = undefined,
     on_close_cb: ?*const fn (
         self_: ?*anyopaque,
     ) anyerror!void = null,
@@ -42,11 +44,6 @@ pub const ClientConnection = struct {
         allocator: std.mem.Allocator,
         server: *Server,
         socket: TCP,
-        cb_ctx: *anyopaque,
-        on_read_cb: *const fn (
-            self_: ?*anyopaque,
-            payload: []const u8,
-        ) void,
     ) !*Self {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
@@ -57,8 +54,6 @@ pub const ClientConnection = struct {
             .socket = socket,
             .write_queue = xev.WriteQueue{},
             .queued_write_pool = std.heap.MemoryPool(QueuedWrite).init(allocator),
-            .cb_ctx = cb_ctx,
-            .on_read_cb = on_read_cb,
         };
         return self;
     }
@@ -104,7 +99,7 @@ pub const ClientConnection = struct {
                     };
                     queued_payload.* = .{
                         .client_connection = inner_self,
-                        .payload = upgrade_response, 
+                        .payload = upgrade_response,
                     };
 
                     socket.queueWrite(
@@ -125,7 +120,13 @@ pub const ClientConnection = struct {
                 }
 
                 // TODO: Proably make it return something optionally
-                inner_self.on_read_cb(inner_self.cb_ctx, buf.slice[0..bytes_read]);
+                if (inner_self.on_read_cb) |cb| {
+                    cb(inner_self.read_cb_ctx, buf.slice[0..bytes_read]) catch |err| {
+                        std.log.err("Failed to read: {any}", .{err});
+                        inner_self.close();
+                        return .disarm;
+                    };
+                }
                 return .disarm;
             }
         }.inner;
@@ -141,18 +142,13 @@ pub const ClientConnection = struct {
 
     pub fn write(
         self: *Self,
-        comptime MessageTypes: type,
-        message_type: MessageTypes,
-        data: std.ArrayList(u8),
+        op: core_types.WebSocketOpCode,
+        data: []const u8,
     ) !void {
         const queued_payload: *QueuedWrite = try self.queued_write_pool.create();
         queued_payload.* = .{
             .client_connection = self,
-            .frame = try Frame.init(
-                self.allocator,
-                @intFromEnum(message_type),
-                data,
-            ),
+            .payload = try wss_frame.createTextFrame(self.allocator, data, op, false),
         };
 
         self.socket.queueWrite(
@@ -214,6 +210,17 @@ pub const ClientConnection = struct {
         server_wss.read(self);
         return .disarm;
     }
+    pub fn setReadCallback(
+        self: *Self,
+        on_read_ctx: *anyopaque,
+        on_read_cb: *const fn (
+            self_: ?*anyopaque,
+            payload: []const u8,
+        ) anyerror!void,
+    ) void {
+        self.read_cb_ctx = on_read_ctx;
+        self.on_read_cb = on_read_cb;
+    }
     pub fn setCloseCallback(
         self: *Self,
         on_close_ctx: *anyopaque,
@@ -221,16 +228,17 @@ pub const ClientConnection = struct {
             self_: ?*anyopaque,
         ) anyerror!void,
     ) void {
-        self.cb_ctx = on_close_ctx;
+        self.close_cb_ctx = on_close_ctx;
         self.on_close_cb = on_close_cb;
     }
     pub fn close(self: *Self) void {
-        self.deinit();
-        defer self.server.returnConnection(self);
         if (self.on_close_cb) |cb| {
-            cb(self.cb_ctx) catch |close_err| {
+            cb(self.close_cb_ctx) catch |close_err| {
                 std.log.err("Failed to close connection: {any}", .{close_err});
             };
         }
+        self.deinit();
+
+        self.server.returnConnection(self);
     }
 };
