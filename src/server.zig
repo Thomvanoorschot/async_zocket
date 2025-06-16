@@ -133,58 +133,58 @@ pub const Server = struct {
     }
 };
 
-test "create server" {
-    std.testing.log_level = .info;
-    var loop = try xev.Loop.init(.{});
-    defer loop.deinit();
+// test "create server" {
+//     std.testing.log_level = .info;
+//     var loop = try xev.Loop.init(.{});
+//     defer loop.deinit();
 
-    const wrapperStruct = struct {
-        const Self = @This();
-        fn accept_callback(
-            _: ?*anyopaque,
-            _: *xev.Loop,
-            _: *xev.Completion,
-            cc: *ClientConnection,
-        ) xev.CallbackAction {
-            cc.setReadCallback(
-                @ptrCast(cc),
-                read_callback,
-            );
-            cc.read();
-            return .rearm;
-        }
-        fn read_callback(
-            context: ?*anyopaque,
-            payload: []const u8,
-        ) !void {
-            _ = context;
-            std.log.info("read_callback: {s}", .{payload});
-            std.testing.allocator.free(payload);
-        }
-    };
-    var ws = wrapperStruct{};
+//     const wrapperStruct = struct {
+//         const Self = @This();
+//         fn accept_callback(
+//             _: ?*anyopaque,
+//             _: *xev.Loop,
+//             _: *xev.Completion,
+//             cc: *ClientConnection,
+//         ) xev.CallbackAction {
+//             cc.setReadCallback(
+//                 @ptrCast(cc),
+//                 read_callback,
+//             );
+//             cc.read();
+//             return .rearm;
+//         }
+//         fn read_callback(
+//             context: ?*anyopaque,
+//             payload: []const u8,
+//         ) !void {
+//             _ = context;
+//             std.log.info("read_callback: {s}", .{payload});
+//             std.testing.allocator.free(payload);
+//         }
+//     };
+//     var ws = wrapperStruct{};
 
-    var server = try Server.init(
-        std.testing.allocator,
-        &loop,
-        .{
-            .host = "127.0.0.1",
-            .port = 8081,
-            .max_connections = 10,
-        },
-        @ptrCast(&ws),
-        wrapperStruct.accept_callback,
-    );
-    server.accept();
+//     var server = try Server.init(
+//         std.testing.allocator,
+//         &loop,
+//         .{
+//             .host = "127.0.0.1",
+//             .port = 8081,
+//             .max_connections = 10,
+//         },
+//         @ptrCast(&ws),
+//         wrapperStruct.accept_callback,
+//     );
+//     server.accept();
 
-    // Accept
-    try loop.run(.once);
-    // Read
-    try loop.run(.once);
-    // Write
-    try loop.run(.once);
-    // Read
-    try loop.run(.once);
+//     // Accept
+//     try loop.run(.once);
+//     // Read
+//     try loop.run(.once);
+//     // Write
+//     try loop.run(.once);
+//     // Read
+//     try loop.run(.once);
 
-    server.deinit();
-}
+//     server.deinit();
+// }

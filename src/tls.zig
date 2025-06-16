@@ -17,6 +17,7 @@ pub const TlsError = error{
     TlsWriteFailed,
     TlsNotReady,
     CertificateVerificationFailed,
+    TlsConnectionClosed,
 };
 
 pub const TlsClient = struct {
@@ -98,6 +99,7 @@ pub const TlsClient = struct {
     }
 
     pub fn processIncoming(self: *TlsClient, encrypted_data: []const u8) !?[]const u8 {
+        std.log.info("processIncoming: received {} bytes", .{encrypted_data.len});
         if (encrypted_data.len == 0) return null;
 
         const written = c.BIO_write(self.bio_read, encrypted_data.ptr, @intCast(encrypted_data.len));
@@ -105,10 +107,15 @@ pub const TlsClient = struct {
             std.log.err("Failed to write to BIO", .{});
             return TlsError.TlsReadFailed;
         }
+        std.log.info("Wrote {} bytes to BIO_read", .{written});
 
         if (!self.handshake_complete) {
+            std.log.info("Attempting TLS handshake...", .{});
             const handshake_result = c.SSL_do_handshake(self.ssl);
+            std.log.info("Handshake result: {}", .{handshake_result});
+
             if (handshake_result == 1) {
+                std.log.info("TLS handshake completed successfully!", .{});
                 self.handshake_complete = true;
 
                 const verify_result = c.SSL_get_verify_result(self.ssl);
@@ -117,6 +124,8 @@ pub const TlsClient = struct {
                 }
             } else {
                 const ssl_error = c.SSL_get_error(self.ssl, handshake_result);
+                std.log.info("Handshake not complete, SSL error: {}", .{ssl_error});
+
                 if (ssl_error != c.SSL_ERROR_WANT_READ and ssl_error != c.SSL_ERROR_WANT_WRITE) {
                     std.log.err("TLS handshake failed with error: {}", .{ssl_error});
                     return TlsError.TlsHandshakeFailed;
@@ -125,25 +134,28 @@ pub const TlsClient = struct {
         }
 
         if (self.handshake_complete) {
+            std.log.info("Reading application data after handshake...", .{});
             self.decrypted_buffer.clearRetainingCapacity();
             var temp_buf: [4096]u8 = undefined;
 
-            while (true) {
-                const bytes_read = c.SSL_read(self.ssl, &temp_buf, temp_buf.len);
-                if (bytes_read > 0) {
-                    try self.decrypted_buffer.appendSlice(temp_buf[0..@intCast(bytes_read)]);
+            const bytes_read = c.SSL_read(self.ssl, &temp_buf, temp_buf.len);
+            if (bytes_read > 0) {
+                std.log.info("Read {} decrypted bytes", .{bytes_read});
+                try self.decrypted_buffer.appendSlice(temp_buf[0..@intCast(bytes_read)]);
+            } else {
+                const ssl_error = c.SSL_get_error(self.ssl, bytes_read);
+                std.log.info("SSL_read returned 0, error: {}", .{ssl_error});
+
+                if (ssl_error == c.SSL_ERROR_WANT_READ) {
+                    return null;
+                } else if (ssl_error == c.SSL_ERROR_WANT_WRITE) {
+                    return null;
+                } else if (ssl_error == c.SSL_ERROR_ZERO_RETURN) {
+                    std.log.info("TLS connection closed cleanly by peer", .{});
+                    return TlsError.TlsConnectionClosed;
                 } else {
-                    const ssl_error = c.SSL_get_error(self.ssl, bytes_read);
-                    if (ssl_error == c.SSL_ERROR_WANT_READ) {
-                        break;
-                    } else if (ssl_error == c.SSL_ERROR_WANT_WRITE) {
-                        break;
-                    } else if (ssl_error == c.SSL_ERROR_ZERO_RETURN) {
-                        break;
-                    } else {
-                        std.log.err("SSL_read failed with error: {}", .{ssl_error});
-                        return TlsError.TlsReadFailed;
-                    }
+                    std.log.err("SSL_read failed with error: {}", .{ssl_error});
+                    return TlsError.TlsReadFailed;
                 }
             }
 
@@ -157,7 +169,9 @@ pub const TlsClient = struct {
 
     pub fn processOutgoing(self: *TlsClient, plaintext: ?[]const u8) !?[]const u8 {
         if (plaintext) |data| {
+            std.log.info("processOutgoing: encrypting {} bytes", .{data.len});
             if (!self.handshake_complete) {
+                std.log.warn("Attempt to encrypt data before handshake complete", .{});
                 return TlsError.TlsNotReady;
             }
 
@@ -168,25 +182,35 @@ pub const TlsClient = struct {
                     std.log.err("SSL_write failed with error: {}", .{ssl_error});
                     return TlsError.TlsWriteFailed;
                 }
+            } else {
+                std.log.info("SSL_write succeeded, wrote {} bytes", .{bytes_written});
             }
+        } else {
+            std.log.info("processOutgoing: checking for pending encrypted data", .{});
         }
 
         self.encrypted_buffer.clearRetainingCapacity();
         var temp_buf: [4096]u8 = undefined;
+        var total_read: usize = 0;
 
         while (true) {
             const bytes_read = c.BIO_read(self.bio_write, &temp_buf, temp_buf.len);
             if (bytes_read > 0) {
+                std.log.info("Read {} bytes from BIO_write", .{bytes_read});
                 try self.encrypted_buffer.appendSlice(temp_buf[0..@intCast(bytes_read)]);
+                total_read += @intCast(bytes_read);
             } else {
+                std.log.info("No more data to read from BIO_write (total read: {})", .{total_read});
                 break;
             }
         }
 
         if (self.encrypted_buffer.items.len > 0) {
+            std.log.info("Returning {} encrypted bytes", .{self.encrypted_buffer.items.len});
             return self.encrypted_buffer.items;
         }
 
+        std.log.info("No encrypted data to send", .{});
         return null;
     }
 
