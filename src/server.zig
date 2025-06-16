@@ -12,6 +12,9 @@ pub const ServerOptions = struct {
     host: []const u8,
     port: u16,
     max_connections: u31 = 1024,
+    use_tls: bool = false,
+    cert_file: ?[]const u8 = null,
+    key_file: ?[]const u8 = null,
 };
 
 pub const Server = struct {
@@ -159,7 +162,6 @@ pub const Server = struct {
 //         ) !void {
 //             _ = context;
 //             std.log.info("read_callback: {s}", .{payload});
-//             std.testing.allocator.free(payload);
 //         }
 //     };
 //     var ws = wrapperStruct{};
@@ -188,3 +190,61 @@ pub const Server = struct {
 
 //     server.deinit();
 // }
+
+test "create TLS server" {
+    std.testing.log_level = .info;
+    var loop = try xev.Loop.init(.{});
+    defer loop.deinit();
+
+    const wrapperStruct = struct {
+        const Self = @This();
+        fn accept_callback(
+            _: ?*anyopaque,
+            _: *xev.Loop,
+            _: *xev.Completion,
+            cc: *ClientConnection,
+        ) xev.CallbackAction {
+            cc.setReadCallback(
+                @ptrCast(cc),
+                read_callback,
+            );
+            cc.read();
+            return .rearm;
+        }
+        fn read_callback(
+            context: ?*anyopaque,
+            payload: []const u8,
+        ) !void {
+            _ = context;
+            std.log.info("read_callback: {s}", .{payload});
+        }
+    };
+    var ws = wrapperStruct{};
+
+    var server = try Server.init(
+        std.testing.allocator,
+        &loop,
+        .{
+            .host = "127.0.0.1",
+            .port = 8081,
+            .max_connections = 10,
+            .use_tls = true,
+            .cert_file = "server.crt",
+            .key_file = "server.key",
+        },
+        @ptrCast(&ws),
+        wrapperStruct.accept_callback,
+    );
+    server.accept();
+
+    // Accept
+    try loop.run(.once);
+    // Read
+    try loop.run(.once);
+    // Write
+    try loop.run(.once);
+    // Read
+    try loop.run(.once);
+
+    server.deinit();
+}

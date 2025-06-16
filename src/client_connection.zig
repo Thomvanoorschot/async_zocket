@@ -4,6 +4,7 @@ const svr = @import("server.zig");
 const wss_frame = @import("wss_frame.zig");
 const server_wss = @import("server_wss.zig");
 const core_types = @import("core_types.zig");
+const tls_server = @import("tls_server.zig");
 
 const TCP = xev.TCP;
 const Completion = xev.Completion;
@@ -37,6 +38,8 @@ pub const ClientConnection = struct {
     ) anyerror!void = null,
 
     has_upgraded: bool = false,
+    tls_server: ?tls_server.TlsServer = null,
+    tls_handshake_complete: bool = false,
 
     const Self = @This();
 
@@ -55,10 +58,28 @@ pub const ClientConnection = struct {
             .write_queue = xev.WriteQueue{},
             .queued_write_pool = std.heap.MemoryPool(QueuedWrite).init(allocator),
         };
+
+        // Initialize TLS if server uses TLS
+        if (server.options.use_tls) {
+            if (server.options.cert_file == null or server.options.key_file == null) {
+                std.log.err("TLS enabled but certificate or key file not provided", .{});
+                allocator.destroy(self);
+                return error.TlsCertificateRequired;
+            }
+            self.tls_server = tls_server.TlsServer.init(server.options.cert_file.?, server.options.key_file.?) catch |err| {
+                std.log.err("Failed to initialize TLS server: {any}", .{err});
+                allocator.destroy(self);
+                return err;
+            };
+        }
+
         return self;
     }
 
     pub fn deinit(self: *Self) void {
+        if (self.tls_server != null) {
+            self.tls_server.?.deinit();
+        }
         self.queued_write_pool.deinit();
     }
     pub fn read(

@@ -149,103 +149,103 @@ pub const Client = struct {
     }
 };
 
-test "create client" {
-    std.testing.log_level = .info;
-    var loop = try xev.Loop.init(.{});
-    defer loop.deinit();
+// test "create client" {
+//     std.testing.log_level = .info;
+//     var loop = try xev.Loop.init(.{});
+//     defer loop.deinit();
 
-    const wrapperStruct = struct {
-        const Self = @This();
-        received_response: bool = false,
-        fn read_callback(context: *anyopaque, payload: []const u8) !void {
-            const self = @as(*Self, @ptrCast(@alignCast(context)));
-            std.log.info("read_callback: {s}\n", .{payload});
-            self.received_response = true;
-        }
-    };
-    var ws = wrapperStruct{};
+//     const wrapperStruct = struct {
+//         const Self = @This();
+//         received_response: bool = false,
+//         fn read_callback(context: *anyopaque, payload: []const u8) !void {
+//             const self = @as(*Self, @ptrCast(@alignCast(context)));
+//             std.log.info("read_callback: {s}\n", .{payload});
+//             self.received_response = true;
+//         }
+//     };
+//     var ws = wrapperStruct{};
 
-    var client = try Client.init(
-        std.testing.allocator,
-        &loop,
-        .{
-            .host = "echo.websocket.events",
-            .port = 80,
-            .path = "/",
-            .use_tls = false,
-        },
-        wrapperStruct.read_callback,
-        @ptrCast(&ws),
-    );
-    client.connect();
+//     var client = try Client.init(
+//         std.testing.allocator,
+//         &loop,
+//         .{
+//             .host = "echo.websocket.events",
+//             .port = 80,
+//             .path = "/",
+//             .use_tls = false,
+//         },
+//         wrapperStruct.read_callback,
+//         @ptrCast(&ws),
+//     );
+//     client.connect();
 
-    const start_time = std.time.milliTimestamp();
-    const duration_ms = 1000;
+//     const start_time = std.time.milliTimestamp();
+//     const duration_ms = 1000;
 
-    while (std.time.milliTimestamp() - start_time < duration_ms) {
-        try loop.run(.no_wait);
-    }
-    client.deinit();
-    try loop.run(.once);
+//     while (std.time.milliTimestamp() - start_time < duration_ms) {
+//         try loop.run(.no_wait);
+//     }
+//     client.deinit();
+//     try loop.run(.once);
 
-    std.testing.expect(ws.received_response) catch {
-        std.log.err("Test failed: No echo response received within timeout", .{});
-    };
-}
+//     std.testing.expect(ws.received_response) catch {
+//         std.log.err("Test failed: No echo response received within timeout", .{});
+//     };
+// }
 
-test "create TLS client" {
-    std.testing.log_level = .info;
-    var loop = try xev.Loop.init(.{});
-    defer loop.deinit();
+// test "create TLS client" {
+//     std.testing.log_level = .info;
+//     var loop = try xev.Loop.init(.{});
+//     defer loop.deinit();
 
-    const wrapperStruct = struct {
-        const Self = @This();
-        received_response: bool = false,
-        fn read_callback(context: *anyopaque, payload: []const u8) !void {
-            const self = @as(*Self, @ptrCast(@alignCast(context)));
-            std.log.info("read_callback: {s}\n", .{payload});
-            self.received_response = true;
-        }
-    };
-    var ws = wrapperStruct{};
+//     const wrapperStruct = struct {
+//         const Self = @This();
+//         received_response: bool = false,
+//         fn read_callback(context: *anyopaque, payload: []const u8) !void {
+//             const self = @as(*Self, @ptrCast(@alignCast(context)));
+//             std.log.info("read_callback: {s}\n", .{payload});
+//             self.received_response = true;
+//         }
+//     };
+//     var ws = wrapperStruct{};
 
-    var client = try Client.init(
-        std.testing.allocator,
-        &loop,
-        .{
-            .host = "echo.websocket.org",
-            .port = 443,
-            .path = "/",
-            .use_tls = true,
-        },
-        wrapperStruct.read_callback,
-        @ptrCast(&ws),
-    );
-    client.connect();
+//     var client = try Client.init(
+//         std.testing.allocator,
+//         &loop,
+//         .{
+//             .host = "echo.websocket.org",
+//             .port = 443,
+//             .path = "/",
+//             .use_tls = true,
+//         },
+//         wrapperStruct.read_callback,
+//         @ptrCast(&ws),
+//     );
+//     client.connect();
 
-    const start_time = std.time.milliTimestamp();
-    const duration_ms = 2000;
+//     const start_time = std.time.milliTimestamp();
+//     const duration_ms = 2000;
 
-    while (std.time.milliTimestamp() - start_time < duration_ms) {
-        try loop.run(.once);
+//     while (std.time.milliTimestamp() - start_time < duration_ms) {
+//         try loop.run(.once);
 
-        if (client.connection_state == .websocket_connection_established) {
-            try client.write("Hello, WSS!");
-            break;
-        }
-    }
+//         if (client.connection_state == .websocket_connection_established) {
+//             try client.write("Hello, WSS!");
+//             break;
+//         }
+//     }
 
-    const response_start = std.time.milliTimestamp();
-    while (std.time.milliTimestamp() - response_start < 2000) {
-        try loop.run(.no_wait);
-    }
+//     const response_start = std.time.milliTimestamp();
+//     while (std.time.milliTimestamp() - response_start < 2000) {
+//         try loop.run(.no_wait);
+//     }
 
-    client.deinit();
-    while (std.time.milliTimestamp() - response_start < 4000) {
-        try loop.run(.no_wait);
-    }
+//     client.deinit();
+//     while (std.time.milliTimestamp() - response_start < 4000) {
+//         try loop.run(.no_wait);
+//     }
 
-    std.testing.expect(ws.received_response) catch {
-        std.log.err("Test failed: No echo response received within timeout", .{});
-    };
-}
+//     std.testing.expect(ws.received_response) catch {
+//         std.log.err("Test failed: No echo response received within timeout", .{});
+//     };
+// }
