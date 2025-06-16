@@ -23,8 +23,12 @@ pub fn handleConnectionEstablished(
     response_data: []const u8,
     body_part_start_index: usize,
 ) !void {
-    std.log.info("WebSocket connection established.\n", .{});
     client.connection_state = .websocket_connection_established;
+    if (client.tls_client != null) {
+        std.log.info("TLS websocket connection established.\n", .{});
+    } else {
+        std.log.info("Websocket connection established.\n", .{});
+    }
     for (client.pending_websocket_writes.items) |payload| {
         try write(client, payload, .text);
     }
@@ -67,9 +71,7 @@ fn onRead(
 ) CallbackAction {
     const client = client_.?;
     const n = r catch |err| {
-        if (err == Error.EOF) {
-            std.log.info("Connection closed by server (EOF)\n", .{});
-        } else {
+        if (err == Error.EOF) {} else {
             std.log.err("Read error: {s}\n", .{@errorName(err)});
         }
         closeSocket(client);
@@ -161,7 +163,7 @@ pub fn write(
 
     const data_to_send = if (client.tls_client) |tls_client| blk: {
         const encrypted = try tls_client.processOutgoing(frame);
-        client.allocator.free(frame); // Free the original frame
+        client.allocator.free(frame);
         if (encrypted) |enc_data| {
             break :blk try client.allocator.dupe(u8, enc_data);
         }
@@ -336,7 +338,6 @@ fn startPingTimer(client: *Client) !void {
     client.loop.timer(
         &client.ping_completion,
         1000 * 10,
-        // 1000 * 2,
         client,
         startPing,
     );

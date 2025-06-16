@@ -44,7 +44,6 @@ pub const Client = struct {
     pending_websocket_writes: std.ArrayList([]const u8),
     incomplete_frame_buffer: []u8 = &[_]u8{},
 
-    // TLS support
     tls_client: ?*tls.TlsClient = null,
 
     pub fn init(
@@ -157,12 +156,11 @@ test "create client" {
 
     const wrapperStruct = struct {
         const Self = @This();
+        received_response: bool = false,
         fn read_callback(context: *anyopaque, payload: []const u8) !void {
-            // You can access the context by casting it to the correct type
-            // const self = @as(*Self, @ptrCast(context));
-            // self.read_callback(self.callback_context, payload);
+            const self = @as(*Self, @ptrCast(@alignCast(context)));
             std.log.info("read_callback: {s}\n", .{payload});
-            _ = context;
+            self.received_response = true;
         }
     };
     var ws = wrapperStruct{};
@@ -189,6 +187,10 @@ test "create client" {
     }
     client.deinit();
     try loop.run(.once);
+
+    std.testing.expect(ws.received_response) catch {
+        std.log.err("Test failed: No echo response received within timeout", .{});
+    };
 }
 
 test "create TLS client" {
@@ -198,9 +200,11 @@ test "create TLS client" {
 
     const wrapperStruct = struct {
         const Self = @This();
+        received_response: bool = false,
         fn read_callback(context: *anyopaque, payload: []const u8) !void {
-            std.log.info("TLS read_callback: {s}\n", .{payload});
-            _ = context;
+            const self = @as(*Self, @ptrCast(@alignCast(context)));
+            std.log.info("read_callback: {s}\n", .{payload});
+            self.received_response = true;
         }
     };
     var ws = wrapperStruct{};
@@ -237,5 +241,11 @@ test "create TLS client" {
     }
 
     client.deinit();
-    try loop.run(.once);
+    while (std.time.milliTimestamp() - response_start < 4000) {
+        try loop.run(.no_wait);
+    }
+
+    std.testing.expect(ws.received_response) catch {
+        std.log.err("Test failed: No echo response received within timeout", .{});
+    };
 }

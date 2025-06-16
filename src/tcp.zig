@@ -42,13 +42,11 @@ fn onConnected(
     client.connection_state = .tcp_connected;
 
     if (client.config.use_tls) {
-        // Initialize TLS client
         client.tls_client = tls.TlsClient.init(client.allocator, client.config.host) catch |err| {
             std.log.err("TLS init error: {s}\n", .{@errorName(err)});
             return .disarm;
         };
 
-        // Start TLS handshake
         client.connection_state = .tls_handshake_started;
         const handshake_data = client.tls_client.?.startHandshake() catch |err| {
             std.log.err("TLS handshake start error: {s}\n", .{@errorName(err)});
@@ -56,7 +54,6 @@ fn onConnected(
         };
 
         if (handshake_data) |data| {
-            // Send TLS handshake data
             const queued_payload: *QueuedWrite = client.queued_write_pool.create() catch |err| {
                 std.log.err("Failed to create queued payload: {s}\n", .{@errorName(err)});
                 return .disarm;
@@ -79,7 +76,6 @@ fn onConnected(
                 onTlsHandshakeWrite,
             );
         } else {
-            // Start reading for TLS handshake response
             socket.read(
                 l,
                 c,
@@ -90,7 +86,6 @@ fn onConnected(
             );
         }
     } else {
-        // Original WebSocket upgrade logic
         return startWebSocketUpgrade(client, l, socket);
     }
 
@@ -98,34 +93,26 @@ fn onConnected(
 }
 
 fn startWebSocketUpgrade(client: *Client, l: *xev.Loop, socket: xev.TCP) xev.CallbackAction {
-    std.log.info("Starting WebSocket upgrade after TLS handshake", .{});
-
     const upgrade_request = wss.createUpgradeRequest(
         client.allocator,
-        "ws.kraken.com",
-        "/v2",
-        // client.config.host,
-        // client.config.path,
+        client.config.host,
+        client.config.path,
+        // "ws.kraken.com",
+        // "/v2",
     ) catch |err| {
         std.log.err("Failed to generate upgrade request: {s}\n", .{@errorName(err)});
         return .disarm;
     };
 
-    std.log.info("Generated upgrade request: {s}", .{upgrade_request});
-
-    // Encrypt the upgrade request if TLS is enabled
     const data_to_send = if (client.tls_client) |tls_client| blk: {
-        std.log.info("Encrypting upgrade request with TLS...", .{});
-
         const encrypted = tls_client.processOutgoing(upgrade_request) catch |err| {
             std.log.err("Failed to encrypt upgrade request: {s}\n", .{@errorName(err)});
             client.allocator.free(upgrade_request);
             return .disarm;
         };
-        client.allocator.free(upgrade_request); // Free the original request
+        client.allocator.free(upgrade_request);
 
         if (encrypted) |enc_data| {
-            std.log.info("Successfully encrypted upgrade request: {} bytes", .{enc_data.len});
             break :blk client.allocator.dupe(u8, enc_data) catch |err| {
                 std.log.err("Failed to duplicate encrypted upgrade request: {s}\n", .{@errorName(err)});
                 return .disarm;
@@ -135,8 +122,6 @@ fn startWebSocketUpgrade(client: *Client, l: *xev.Loop, socket: xev.TCP) xev.Cal
             return .disarm;
         }
     } else upgrade_request;
-
-    std.log.info("Sending {} bytes for WebSocket upgrade", .{data_to_send.len});
 
     const queued_payload: *QueuedWrite = client.queued_write_pool.create() catch |err| {
         std.log.err("Failed to create queued payload: {s}\n", .{@errorName(err)});
@@ -178,7 +163,6 @@ fn onTlsHandshakeWrite(
         return .disarm;
     };
 
-    // Read TLS handshake response
     socket.read(
         l,
         c,
@@ -213,21 +197,14 @@ fn onTlsHandshakeRead(
 
     const received_data = buf.slice[0..bytes_read];
 
-    // Only process incoming if handshake is not yet complete
     if (!client.tls_client.?.isHandshakeComplete()) {
-        _ = client.tls_client.?.processIncoming(received_data) catch |err| {
+        const decrypted_data = client.tls_client.?.processIncoming(received_data) catch |err| {
             std.log.err("TLS handshake process error: {s}\n", .{@errorName(err)});
             closeSocket(client);
             return .disarm;
         };
 
-        const outgoing_data = client.tls_client.?.processOutgoing(null) catch |err| {
-            std.log.err("TLS handshake outgoing error: {s}\n", .{@errorName(err)});
-            closeSocket(client);
-            return .disarm;
-        };
-
-        if (outgoing_data) |data| {
+        if (decrypted_data) |data| {
             const queued_payload: *QueuedWrite = client.queued_write_pool.create() catch |err| {
                 std.log.err("Failed to create queued payload: {s}\n", .{@errorName(err)});
                 return .disarm;
@@ -253,7 +230,6 @@ fn onTlsHandshakeRead(
         }
 
         if (client.tls_client.?.isHandshakeComplete()) {
-            std.log.info("TLS handshake completed, starting WebSocket upgrade", .{});
             client.connection_state = .tls_connected;
             return startWebSocketUpgrade(client, l, socket);
         } else {
@@ -266,11 +242,6 @@ fn onTlsHandshakeRead(
                 onTlsHandshakeRead,
             );
         }
-    } else {
-        // Handshake was already complete, this shouldn't happen in this callback
-        std.log.err("Received data after TLS handshake complete in handshake callback", .{});
-        closeSocket(client);
-        return .disarm;
     }
 
     return .disarm;
@@ -307,8 +278,8 @@ fn onWebsocketUpgrade(
 
 fn onWebsocketUpgradeRead(
     client_: ?*Client,
-    _: *xev.Loop,
-    _: *xev.Completion,
+    l: *xev.Loop,
+    c: *xev.Completion,
     _: xev.TCP,
     buf: xev.ReadBuffer,
     r: xev.ReadError!usize,
@@ -320,14 +291,9 @@ fn onWebsocketUpgradeRead(
         return .disarm;
     };
 
-    std.log.info("Received {} bytes for WebSocket upgrade response", .{bytes_read});
-
     const raw_response = buf.slice[0..bytes_read];
 
-    // Decrypt the response if TLS is enabled
     const response_data = if (client.tls_client) |tls_client| blk: {
-        std.log.info("Decrypting WebSocket upgrade response...", .{});
-
         const decrypted = tls_client.processIncoming(raw_response) catch |err| {
             std.log.err("TLS decrypt error during upgrade: {s}\n", .{@errorName(err)});
             closeSocket(client);
@@ -335,11 +301,16 @@ fn onWebsocketUpgradeRead(
         };
 
         if (decrypted) |data| {
-            std.log.info("Successfully decrypted {} bytes: {s}", .{ data.len, data });
             break :blk data;
         } else {
-            std.log.err("No decrypted data received during upgrade", .{});
-            closeSocket(client);
+            client.socket.read(
+                l,
+                c,
+                .{ .slice = &client.read_buf },
+                Client,
+                client,
+                onWebsocketUpgradeRead,
+            );
             return .disarm;
         }
     } else raw_response;
@@ -360,8 +331,6 @@ fn onWebsocketUpgradeRead(
         closeSocket(client);
         return .disarm;
     }
-
-    std.log.info("WebSocket upgrade successful!", .{});
 
     wss.handleConnectionEstablished(
         client,
