@@ -1,27 +1,11 @@
 const std = @import("std");
 const xev = @import("xev");
+const tls = @import("tls.zig");
 
-const c = @cImport({
-    @cInclude("openssl/ssl.h");
-    @cInclude("openssl/err.h");
-    @cInclude("openssl/bio.h");
-    @cInclude("openssl/x509v3.h");
-});
+const c = tls.c;
+pub const TlsError = tls.TlsError;
 
-pub const TlsError = error{
-    TlsContextFailed,
-    TlsConnectionFailed,
-    BioFailed,
-    TlsHandshakeFailed,
-    TlsReadFailed,
-    TlsWriteFailed,
-    TlsNotReady,
-    CertificateLoadFailed,
-    PrivateKeyLoadFailed,
-    TlsConnectionClosed,
-};
-
-const BUFFER_SIZE = 4096;
+const BUFFER_SIZE = tls.BUFFER_SIZE;
 const MAX_PATH_LEN = 256;
 const MAX_HANDSHAKE_ATTEMPTS = 10;
 
@@ -34,13 +18,10 @@ pub const TlsServer = struct {
     bio_write: ?*c.BIO = null,
     handshake_complete: bool = false,
 
-    encrypted_buffer: [BUFFER_SIZE * 2]u8 = undefined,
-    encrypted_len: usize = 0,
-    decrypted_buffer: [BUFFER_SIZE * 2]u8 = undefined,
-    decrypted_len: usize = 0,
+    buffers: tls.TlsBuffers = .{},
 
     pub fn init(cert_file: []const u8, key_file: []const u8) !TlsServer {
-        _ = c.OPENSSL_init_ssl(c.OPENSSL_INIT_LOAD_SSL_STRINGS | c.OPENSSL_INIT_LOAD_CRYPTO_STRINGS, null);
+        tls.initOpenSsl();
 
         return .{
             .cert_file = cert_file,
@@ -49,20 +30,18 @@ pub const TlsServer = struct {
     }
 
     pub fn initConnection(self: *TlsServer) !void {
-        std.log.info("Creating fresh SSL context and connection", .{});
-
         self.cleanup();
 
         const ctx = try self.createSslContext();
         errdefer c.SSL_CTX_free(ctx);
 
-        const ssl = try self.createSslInstance(ctx);
+        const ssl = try tls.createSslInstance(ctx);
         errdefer c.SSL_free(ssl);
 
-        const bio_read = try self.createBio();
+        const bio_read = try tls.createBio();
         errdefer _ = c.BIO_free(bio_read);
 
-        const bio_write = try self.createBio();
+        const bio_write = try tls.createBio();
         errdefer _ = c.BIO_free(bio_write);
 
         c.SSL_set_bio(ssl, bio_read, bio_write);
@@ -73,8 +52,6 @@ pub const TlsServer = struct {
         self.bio_read = bio_read;
         self.bio_write = bio_write;
         self.handshake_complete = false;
-
-        std.log.info("SSL context and connection created successfully", .{});
     }
 
     pub fn deinit(self: *TlsServer) void {
@@ -83,8 +60,6 @@ pub const TlsServer = struct {
 
     pub fn startHandshake(self: *TlsServer) !?[]const u8 {
         if (self.ssl == null) return TlsError.TlsConnectionFailed;
-
-        std.log.info("Handshake initialization complete, waiting for client data", .{});
         return null;
     }
 
@@ -92,14 +67,11 @@ pub const TlsServer = struct {
         if (encrypted_data.len == 0) return null;
         if (self.ssl == null or self.bio_read == null) return TlsError.TlsConnectionFailed;
 
-        std.log.info("Processing {} incoming bytes", .{encrypted_data.len});
-
-        try self.writeToReadBio(encrypted_data);
+        try tls.writeToBio(self.bio_read.?, encrypted_data);
 
         if (!self.handshake_complete) {
             try self.attemptHandshake();
             if (!self.handshake_complete) return null;
-            std.log.info("🎉 TLS handshake completed!", .{});
         }
 
         return try self.readDecryptedData();
@@ -109,7 +81,6 @@ pub const TlsServer = struct {
         if (self.ssl == null) return TlsError.TlsConnectionFailed;
 
         if (plaintext) |data| {
-            std.log.info("Encrypting {} bytes", .{data.len});
             try self.writeEncryptedData(data);
         }
 
@@ -144,8 +115,6 @@ pub const TlsServer = struct {
 
         try self.configureSslContext(ctx);
         try self.loadCertificates(ctx);
-
-        std.log.info("SSL context created successfully", .{});
         return ctx;
     }
 
@@ -173,21 +142,21 @@ pub const TlsServer = struct {
         // Load certificate
         if (c.SSL_CTX_use_certificate_file(ctx, &cert_path, c.SSL_FILETYPE_PEM) <= 0) {
             std.log.err("Failed to load certificate file: {s}", .{self.cert_file});
-            logOpenSslError();
+            tls.logOpenSslError();
             return TlsError.CertificateLoadFailed;
         }
 
         // Load private key
         if (c.SSL_CTX_use_PrivateKey_file(ctx, &key_path, c.SSL_FILETYPE_PEM) <= 0) {
             std.log.err("Failed to load private key file: {s}", .{self.key_file});
-            logOpenSslError();
+            tls.logOpenSslError();
             return TlsError.PrivateKeyLoadFailed;
         }
 
         // Verify key matches certificate
         if (c.SSL_CTX_check_private_key(ctx) != 1) {
             std.log.err("Private key does not match certificate", .{});
-            logOpenSslError();
+            tls.logOpenSslError();
             return TlsError.PrivateKeyLoadFailed;
         }
     }
@@ -202,30 +171,6 @@ pub const TlsServer = struct {
         return result;
     }
 
-    fn createSslInstance(self: *TlsServer, ctx: *c.SSL_CTX) !*c.SSL {
-        _ = self;
-        return c.SSL_new(ctx) orelse {
-            std.log.err("Failed to create SSL instance", .{});
-            return TlsError.TlsConnectionFailed;
-        };
-    }
-
-    fn createBio(self: *TlsServer) !*c.BIO {
-        _ = self;
-        return c.BIO_new(c.BIO_s_mem()) orelse {
-            std.log.err("Failed to create BIO", .{});
-            return TlsError.BioFailed;
-        };
-    }
-
-    fn writeToReadBio(self: *TlsServer, data: []const u8) !void {
-        const written = c.BIO_write(self.bio_read.?, data.ptr, @intCast(data.len));
-        if (written <= 0) {
-            std.log.err("Failed to write to read BIO", .{});
-            return TlsError.TlsReadFailed;
-        }
-    }
-
     fn attemptHandshake(self: *TlsServer) !void {
         const handshake_result = c.SSL_do_handshake(self.ssl.?);
 
@@ -237,47 +182,31 @@ pub const TlsServer = struct {
         const ssl_error = c.SSL_get_error(self.ssl.?, handshake_result);
 
         switch (ssl_error) {
-            c.SSL_ERROR_WANT_READ, c.SSL_ERROR_WANT_WRITE => {
-                std.log.info("Handshake in progress (error: {})", .{ssl_error});
-            },
+            c.SSL_ERROR_WANT_READ, c.SSL_ERROR_WANT_WRITE => {},
             else => {
                 std.log.err("Handshake failed with error: {}", .{ssl_error});
-                self.logDetailedSslError();
+                tls.logDetailedSslError(self.ssl.?);
                 return TlsError.TlsHandshakeFailed;
             },
         }
     }
 
     fn readDecryptedData(self: *TlsServer) !?[]const u8 {
-        self.decrypted_len = 0;
+        self.buffers.resetDecrypted();
         var temp_buf: [BUFFER_SIZE]u8 = undefined;
 
         const bytes_read = c.SSL_read(self.ssl.?, &temp_buf, temp_buf.len);
 
         if (bytes_read > 0) {
             const read_size = @as(usize, @intCast(bytes_read));
-            if (read_size > self.decrypted_buffer.len) return TlsError.TlsReadFailed;
+            if (read_size > self.buffers.decrypted_buffer.len) return TlsError.TlsReadFailed;
 
-            @memcpy(self.decrypted_buffer[0..read_size], temp_buf[0..read_size]);
-            self.decrypted_len = read_size;
-            return self.decrypted_buffer[0..self.decrypted_len];
+            @memcpy(self.buffers.decrypted_buffer[0..read_size], temp_buf[0..read_size]);
+            self.buffers.decrypted_len = read_size;
+            return self.buffers.getDecryptedSlice();
         }
 
-        return try self.handleSslReadError(bytes_read);
-    }
-
-    fn handleSslReadError(self: *TlsServer, bytes_read: c_int) !?[]const u8 {
-        const ssl_error = c.SSL_get_error(self.ssl.?, bytes_read);
-
-        return switch (ssl_error) {
-            c.SSL_ERROR_WANT_READ, c.SSL_ERROR_WANT_WRITE => null,
-            c.SSL_ERROR_ZERO_RETURN => TlsError.TlsConnectionClosed,
-            else => {
-                std.log.err("SSL_read failed with error: {}", .{ssl_error});
-                self.logDetailedSslError();
-                return TlsError.TlsReadFailed;
-            },
-        };
+        return try tls.handleSslReadError(self.ssl.?, bytes_read);
     }
 
     fn writeEncryptedData(self: *TlsServer, data: []const u8) !void {
@@ -290,64 +219,15 @@ pub const TlsServer = struct {
         if (ssl_error == c.SSL_ERROR_WANT_READ or ssl_error == c.SSL_ERROR_WANT_WRITE) return;
 
         std.log.err("SSL_write failed with error: {}", .{ssl_error});
-        self.logDetailedSslError();
+        tls.logDetailedSslError(self.ssl.?);
         return TlsError.TlsWriteFailed;
     }
 
     fn readFromWriteBio(self: *TlsServer) !?[]const u8 {
-        self.encrypted_len = 0;
-        var temp_buf: [BUFFER_SIZE]u8 = undefined;
+        self.buffers.resetEncrypted();
+        const encrypted_len = try tls.readFromBio(self.bio_write.?, &self.buffers.encrypted_buffer);
+        self.buffers.encrypted_len = encrypted_len;
 
-        while (self.encrypted_len < self.encrypted_buffer.len) {
-            const remaining = self.encrypted_buffer.len - self.encrypted_len;
-            const read_size = @min(temp_buf.len, remaining);
-
-            const bytes_read = c.BIO_read(self.bio_write.?, &temp_buf, @intCast(read_size));
-            if (bytes_read <= 0) break;
-
-            const actual_read = @as(usize, @intCast(bytes_read));
-            @memcpy(self.encrypted_buffer[self.encrypted_len .. self.encrypted_len + actual_read], temp_buf[0..actual_read]);
-            self.encrypted_len += actual_read;
-        }
-
-        return if (self.encrypted_len > 0) self.encrypted_buffer[0..self.encrypted_len] else null;
-    }
-
-    fn logDetailedSslError(self: *TlsServer) void {
-        if (self.ssl == null) return;
-
-        std.log.err("=== SSL Error Details ===", .{});
-
-        // Log error queue
-        var error_count: u32 = 0;
-        while (true) {
-            const err_code = c.ERR_get_error();
-            if (err_code == 0) break;
-
-            var err_buf: [256]u8 = undefined;
-            _ = c.ERR_error_string_n(err_code, &err_buf, err_buf.len);
-            std.log.err("Error {}: {s}", .{ error_count, std.mem.sliceTo(&err_buf, 0) });
-            error_count += 1;
-        }
-
-        if (error_count == 0) {
-            std.log.err("No errors in OpenSSL queue", .{});
-        }
-
-        // Log SSL state
-        const state = c.SSL_get_state(self.ssl.?);
-        const state_string = c.SSL_state_string_long(self.ssl.?);
-        std.log.err("SSL State: {} ({s})", .{ state, @as([*:0]const u8, @ptrCast(state_string)) });
-
-        std.log.err("=== End SSL Error Details ===", .{});
+        return if (self.buffers.encrypted_len > 0) self.buffers.getEncryptedSlice() else null;
     }
 };
-
-fn logOpenSslError() void {
-    const err_code = c.ERR_get_error();
-    if (err_code == 0) return;
-
-    var err_buf: [256]u8 = undefined;
-    _ = c.ERR_error_string_n(err_code, &err_buf, err_buf.len);
-    std.log.err("OpenSSL error: {s}", .{std.mem.sliceTo(&err_buf, 0)});
-}

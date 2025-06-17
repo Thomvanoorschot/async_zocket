@@ -124,8 +124,6 @@ pub const Server = struct {
 
     pub fn returnConnection(self: *Self, client_conn: *ClientConnection) void {
         defer self.allocator.destroy(client_conn);
-        std.log.info("Returning connection fd={d}", .{client_conn.socket.fd});
-
         for (self.connections.items, 0..) |conn, i| {
             if (conn == client_conn) {
                 _ = self.connections.swapRemove(i);
@@ -206,7 +204,6 @@ test "create TLS server" {
             _: *xev.Completion,
             cc: *ClientConnection,
         ) xev.CallbackAction {
-            std.log.info("Client connected", .{});
             cc.setReadCallback(ctx.?, read_callback);
             cc.read();
             return .rearm;

@@ -124,7 +124,6 @@ pub const ClientConnection = struct {
                 const inner_self = self_ orelse unreachable;
                 const bytes_read = r catch |err| {
                     if (err == error.ConnectionResetByPeer) {
-                        std.log.info("Connection reset by peer", .{});
                         inner_self.close();
                         return .disarm;
                     }
@@ -134,18 +133,13 @@ pub const ClientConnection = struct {
                 };
 
                 if (bytes_read == 0) {
-                    std.log.info("Connection closed (0 bytes read)", .{});
                     inner_self.close();
                     return .disarm;
                 }
 
-                std.log.info("Received {d} bytes, TLS enabled: {}, has_upgraded: {}", .{ bytes_read, inner_self.tls_server != null, inner_self.has_upgraded });
-
                 // Handle TLS if enabled
                 var processed_data: ?[]const u8 = null;
                 if (inner_self.tls_server) |*tls| {
-                    std.log.info("Processing TLS data, handshake complete: {}", .{tls.isHandshakeComplete()});
-
                     // Process incoming encrypted data
                     const decrypted = tls.processIncoming(buf.slice[0..bytes_read]) catch |err| {
                         std.log.err("TLS processing failed: {}", .{err});
@@ -169,7 +163,6 @@ pub const ClientConnection = struct {
                     };
 
                     if (encrypted_response) |data| {
-                        std.log.info("Sending TLS response: {} bytes (handshake complete: {})", .{ data.len, tls.isHandshakeComplete() });
                         inner_self.sendTlsData(data) catch |err| {
                             std.log.err("Failed to send TLS response: {}", .{err});
                             inner_self.close();
@@ -177,20 +170,10 @@ pub const ClientConnection = struct {
                         };
                     }
 
-                    // Update handshake status after processing
-                    const was_handshake_complete = inner_self.tls_handshake_complete;
                     inner_self.tls_handshake_complete = tls.isHandshakeComplete();
-
-                    if (!was_handshake_complete and inner_self.tls_handshake_complete) {
-                        std.log.info("TLS handshake just completed!", .{});
-                    }
-
                     if (decrypted) |data| {
-                        std.log.info("TLS decrypted {} bytes: {s}", .{ data.len, data });
                         processed_data = data;
                     } else {
-                        std.log.info("No decrypted data yet, handshake complete: {}", .{tls.isHandshakeComplete()});
-                        // Continue reading for more data
                         inner_self.read();
                         return .disarm;
                     }
@@ -200,7 +183,6 @@ pub const ClientConnection = struct {
 
                 if (processed_data) |data| {
                     if (!inner_self.has_upgraded) {
-                        std.log.info("Processing WebSocket upgrade with {d} bytes", .{data.len});
                         const upgrade_response = server_wss.createUpgradeResponse(
                             inner_self.allocator,
                             data,
@@ -318,15 +300,12 @@ pub const ClientConnection = struct {
                 return error.TlsHandshakeNotComplete;
             }
 
-            std.log.info("Encrypting response: {d} bytes", .{response.len});
-            // Encrypt the response
             const encrypted_response = tls.processOutgoing(response) catch |err| {
                 self.allocator.free(response);
                 return err;
             };
 
             if (encrypted_response) |encrypted| {
-                std.log.info("Encrypted response: {d} bytes", .{encrypted.len});
                 final_response = try self.allocator.dupe(u8, encrypted);
                 self.allocator.free(response);
             } else {
@@ -378,53 +357,21 @@ pub const ClientConnection = struct {
         return .disarm;
     }
 
-    // Add a WebSocket frame handler function
     fn handleWebSocketData(self: *Self, data: []const u8) !void {
-        // Add debugging to see the raw bytes
-        std.log.info("Handling WebSocket data: {} bytes", .{data.len});
-        if (data.len > 0) {
-            // Log first few bytes in hex format for debugging
-            const preview_len = @min(data.len, 16);
-            var hex_buf: [64]u8 = undefined;
-            var hex_len: usize = 0;
-            for (data[0..preview_len]) |byte| {
-                const written = std.fmt.bufPrint(hex_buf[hex_len..], "{x:0>2} ", .{byte}) catch break;
-                hex_len += written.len;
-            }
-            std.log.info("Raw WebSocket data (hex): {s}", .{hex_buf[0..hex_len]});
-        }
-
         var remaining_buffer = data;
 
-        // If we have incomplete frame data from previous reads, combine it
         if (self.incomplete_frame_buffer.len > 0) {
             remaining_buffer = try std.mem.concat(self.allocator, u8, &.{ self.incomplete_frame_buffer, remaining_buffer });
             self.allocator.free(self.incomplete_frame_buffer);
             self.incomplete_frame_buffer = &[_]u8{};
-            std.log.info("Combined with incomplete buffer, total: {} bytes", .{remaining_buffer.len});
         }
 
         while (remaining_buffer.len > 0) {
-            // Add more detailed debugging before parsing
-            if (remaining_buffer.len >= 2) {
-                const first_byte = remaining_buffer[0];
-                const second_byte = remaining_buffer[1];
-                const fin = (first_byte & 0x80) != 0;
-                const opcode_u8 = first_byte & 0x0F;
-                const masked = (second_byte & 0x80) != 0;
-                const payload_len = second_byte & 0x7F;
-
-                std.log.info("Frame header: FIN={}, opcode=0x{x}, masked={}, payload_len={}", .{ fin, opcode_u8, masked, payload_len });
-            }
-
             const frame = wss_frame.WebSocketFrame.parse(remaining_buffer, self.allocator) catch |err| {
                 if (err == error.InsufficientData) {
-                    // Store incomplete frame data for next read
                     self.incomplete_frame_buffer = try self.allocator.dupe(u8, remaining_buffer);
-                    std.log.info("Storing {} bytes for next read (insufficient data)", .{remaining_buffer.len});
                     break;
                 }
-                std.log.err("Error parsing WebSocket frame: {any}", .{err});
                 if (remaining_buffer.len >= 8) {
                     std.log.err("Problematic data length: {}, first 8 bytes: {any}", .{ remaining_buffer.len, remaining_buffer[0..8] });
                 } else {
@@ -433,14 +380,9 @@ pub const ClientConnection = struct {
                 return err;
             };
 
-            std.log.info("Successfully parsed frame: opcode={}, payload_len={}", .{ frame.opcode, frame.payload.len });
-
-            // Handle the frame based on its opcode
             switch (frame.opcode) {
                 .text, .binary => {
-                    // Call the ORIGINAL user callback, not handleWebSocketData again!
                     if (self.on_read_cb) |cb| {
-                        std.log.info("Calling user callback with payload: {s}", .{frame.payload});
                         try cb(self.read_cb_ctx, frame.payload);
                     }
                 },
@@ -451,11 +393,9 @@ pub const ClientConnection = struct {
                     return;
                 },
                 .ping => {
-                    // Send pong response
                     try self.write(.pong, frame.payload);
                 },
                 .pong => {
-                    // Handle pong (usually just log or ignore)
                     std.log.debug("Received pong frame", .{});
                 },
                 else => {
