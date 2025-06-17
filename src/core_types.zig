@@ -19,15 +19,10 @@ pub const QueuedWrite = struct {
 };
 
 pub const ConnectionState = enum {
-    initial,
+    disconnected,
     connecting,
-    tcp_connected,
-    tls_handshake_started,
-    tls_connected,
-    websocket_handshake_sent,
-    websocket_connection_established,
+    ready,
     closing,
-    closed,
 };
 
 pub const Error = error{

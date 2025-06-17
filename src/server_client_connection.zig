@@ -43,6 +43,7 @@ pub const ClientConnection = struct {
 
     // Add a field to handle incomplete frames
     incomplete_frame_buffer: []u8 = &[_]u8{},
+    is_closing: bool = false,
 
     const Self = @This();
 
@@ -460,6 +461,8 @@ pub const ClientConnection = struct {
         self.on_close_cb = on_close_cb;
     }
     pub fn close(self: *Self) void {
+        if (self.is_closing) return;
+        self.is_closing = true;
         if (self.on_close_cb) |cb| {
             cb(self.close_cb_ctx) catch |close_err| {
                 std.log.err("Failed to close connection: {any}", .{close_err});

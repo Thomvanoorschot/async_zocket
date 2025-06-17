@@ -29,7 +29,7 @@ pub const Client = struct {
     close_completion: xev.Completion = undefined,
     ping_completion: xev.Completion = undefined,
 
-    connection_state: ConnectionState = .initial,
+    connection_state: ConnectionState = .disconnected,
     read_buf: [1024]u8 = undefined,
 
     write_queue: xev.WriteQueue,
@@ -229,7 +229,7 @@ test "create TLS client" {
     while (std.time.milliTimestamp() - start_time < duration_ms) {
         try loop.run(.once);
 
-        if (client.connection_state == .websocket_connection_established) {
+        if (client.connection_state == .ready) {
             try client.write("Hello, WSS!");
             break;
         }

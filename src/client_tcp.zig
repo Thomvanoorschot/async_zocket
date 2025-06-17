@@ -39,7 +39,7 @@ fn onConnected(
         return .disarm;
     };
 
-    client.connection_state = .tcp_connected;
+    client.connection_state = .connecting;
 
     if (client.config.use_tls) {
         client.tls_client = tls_clnt.TlsClient.init(client.config.host) catch |err| {
@@ -47,7 +47,6 @@ fn onConnected(
             return .disarm;
         };
 
-        client.connection_state = .tls_handshake_started;
         const handshake_data = client.tls_client.?.startHandshake() catch |err| {
             std.log.err("TLS handshake start error: {s}\n", .{@errorName(err)});
             return .disarm;
@@ -230,7 +229,6 @@ fn onTlsHandshakeRead(
         }
 
         if (client.tls_client.?.isHandshakeComplete()) {
-            client.connection_state = .tls_connected;
             return startWebSocketUpgrade(client, l, socket);
         } else {
             socket.read(
@@ -264,7 +262,6 @@ fn onWebsocketUpgrade(
         return .disarm;
     };
 
-    client.connection_state = .websocket_handshake_sent;
     socket.read(
         l,
         c,
@@ -387,7 +384,7 @@ fn closeCallback(
             std.log.err("Close error: {s}\n", .{@errorName(err)});
         }
     };
-    client.connection_state = .closed;
+    client.connection_state = .disconnected;
     defer client.deinitMemory();
     return .disarm;
 }

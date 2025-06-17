@@ -23,7 +23,7 @@ pub fn handleConnectionEstablished(
     response_data: []const u8,
     body_part_start_index: usize,
 ) !void {
-    client.connection_state = .websocket_connection_established;
+    client.connection_state = .ready;
     if (client.tls_client != null) {
         std.log.info("TLS websocket connection established.\n", .{});
     } else {
@@ -150,7 +150,7 @@ pub fn write(
     payload: []const u8,
     op: WebSocketOpCode,
 ) !void {
-    if (client.connection_state != .websocket_connection_established) {
+    if (client.connection_state != .ready) {
         const copied_payload = try client.allocator.dupe(u8, payload);
         try client.pending_websocket_writes.append(copied_payload);
         return;
@@ -285,7 +285,7 @@ fn handleDataFrame(
     fin: bool,
     payload: []const u8,
 ) !void {
-    if (client.connection_state == .websocket_connection_established) {
+    if (client.connection_state == .ready) {
         if (!fin) {
             return Error.CanNotHandleFragmentedMessages;
         }
@@ -351,7 +351,7 @@ fn startPing(
 ) CallbackAction {
     const client = @as(*Client, @ptrCast(@alignCast(client_.?)));
 
-    if (client.connection_state == .websocket_connection_established) {
+    if (client.connection_state == .ready) {
         sendPingFrame(client) catch |err| {
             std.log.err("Failed to send ping: {s}\n", .{@errorName(err)});
         };
