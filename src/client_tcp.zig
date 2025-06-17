@@ -3,7 +3,7 @@ const clnt = @import("client.zig");
 const xev = @import("xev");
 const wss = @import("client_wss.zig");
 const core_types = @import("core_types.zig");
-const tls = @import("tls.zig");
+const tls_clnt = @import("tls_client.zig");
 
 const Client = clnt.Client;
 const Error = core_types.Error;
@@ -42,7 +42,7 @@ fn onConnected(
     client.connection_state = .tcp_connected;
 
     if (client.config.use_tls) {
-        client.tls_client = tls.TlsClient.init(client.config.host) catch |err| {
+        client.tls_client = tls_clnt.TlsClient.init(client.config.host) catch |err| {
             std.log.err("TLS init error: {s}\n", .{@errorName(err)});
             return .disarm;
         };

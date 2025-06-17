@@ -1,7 +1,7 @@
 const std = @import("std");
 const base64 = std.base64;
 const core_types = @import("core_types.zig");
-const client_connection = @import("client_connection.zig");
+const client_connection = @import("server_client_connection.zig");
 const xev = @import("xev");
 const wss_frame = @import("wss_frame.zig");
 

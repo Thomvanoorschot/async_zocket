@@ -1,9 +1,9 @@
 const std = @import("std");
 const xev = @import("xev");
-const tcp = @import("tcp.zig");
+const client_tcp = @import("client_tcp.zig");
 const wss = @import("client_wss.zig");
 const core_types = @import("core_types.zig");
-const tls = @import("tls.zig");
+const tls_clnt = @import("tls_client.zig");
 
 const QueuedWrite = core_types.QueuedWrite;
 const ConnectionState = core_types.ConnectionState;
@@ -44,7 +44,7 @@ pub const Client = struct {
     pending_websocket_writes: std.ArrayList([]const u8),
     incomplete_frame_buffer: []u8 = &[_]u8{},
 
-    tls_client: ?tls.TlsClient = null,
+    tls_client: ?tls_clnt.TlsClient = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -87,7 +87,7 @@ pub const Client = struct {
     pub fn deinit(client: *Client) void {
         client.connection_state = .closing;
         client.cancelCompletion(&client.ping_completion);
-        tcp.closeSocket(client);
+        client_tcp.closeSocket(client);
     }
     pub fn deinitMemory(client: *Client) void {
         for (client.pending_websocket_writes.items) |item| {
@@ -107,7 +107,7 @@ pub const Client = struct {
     }
 
     pub fn connect(client: *Client) void {
-        tcp.connect(
+        client_tcp.connect(
             client,
             client.loop,
             &client.connect_completion,

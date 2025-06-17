@@ -2,7 +2,7 @@ const std = @import("std");
 const base64 = @import("std").base64;
 const xev = @import("xev");
 const clnt = @import("client.zig");
-const tcp = @import("tcp.zig");
+const client_tcp = @import("client_tcp.zig");
 const wss_frame = @import("wss_frame.zig");
 const core_types = @import("core_types.zig");
 
@@ -13,7 +13,7 @@ const random = std.crypto.random;
 const QueuedWrite = core_types.QueuedWrite;
 const WebSocketOpCode = core_types.WebSocketOpCode;
 
-const closeSocket = tcp.closeSocket;
+const closeSocket = client_tcp.closeSocket;
 const createTextFrame = wss_frame.createTextFrame;
 const createCloseFrame = wss_frame.createCloseFrame;
 const createControlFrame = wss_frame.createControlFrame;

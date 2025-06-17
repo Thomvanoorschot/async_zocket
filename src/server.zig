@@ -1,6 +1,6 @@
 const std = @import("std");
 const xev = @import("xev");
-const clnt_conn = @import("client_connection.zig");
+const clnt_conn = @import("server_client_connection.zig");
 
 const Allocator = std.mem.Allocator;
 const Loop = xev.Loop;
@@ -66,9 +66,6 @@ pub const Server = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        // self.listen_socket.close();
-        // self.accept_completion.cancel(self.loop);
-
         while (self.connections.pop()) |client_conn| {
             client_conn.close();
         }
@@ -116,15 +113,6 @@ pub const Server = struct {
         }
 
         std.log.info("Accepted connection {}/{}", .{ self.connections.items.len, self.options.max_connections });
-
-        // Don't start TLS handshake here - let it happen when data arrives
-        // if (self.options.use_tls) {
-        //     client_conn.startTlsHandshake() catch |err| {
-        //         std.log.err("Failed to start TLS handshake: {any}", .{err});
-        //         client_conn.close();
-        //         return .rearm;
-        //     };
-        // }
 
         return self.on_accept_cb(
             self.cb_ctx,
