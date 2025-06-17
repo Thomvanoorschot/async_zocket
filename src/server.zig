@@ -207,36 +207,34 @@ test "create TLS server" {
     var loop = try xev.Loop.init(.{});
     defer loop.deinit();
 
-    const wrapperStruct = struct {
+    const TestState = struct {
         const Self = @This();
+        received_message: bool = false,
+        server_ptr: ?*Server = null,
+
         fn accept_callback(
-            _: ?*anyopaque,
+            ctx: ?*anyopaque,
             _: *xev.Loop,
             _: *xev.Completion,
             cc: *ClientConnection,
         ) xev.CallbackAction {
-            cc.setReadCallback(
-                @ptrCast(cc),
-                read_callback,
-            );
+            std.log.info("Client connected", .{});
+            cc.setReadCallback(ctx.?, read_callback);
             cc.read();
             return .rearm;
         }
+
         fn read_callback(
             context: ?*anyopaque,
             payload: []const u8,
         ) !void {
-            _ = context;
-            std.log.info("Raw WebSocket frame data: {} bytes", .{payload.len});
-            for (payload[0..@min(16, payload.len)], 0..) |byte, i| {
-                if (i % 16 == 0) std.debug.print("\nFrame[{x:0>4}]: ", .{i});
-                std.debug.print("{x:0>2} ", .{byte});
-            }
-            std.debug.print("\n", .{});
-            return;
+            const self = @as(*Self, @ptrCast(@alignCast(context.?)));
+            std.log.info("Received WebSocket message: {s}", .{payload});
+            self.received_message = true;
         }
     };
-    var ws = wrapperStruct{};
+
+    var test_state = TestState{};
 
     var server = try Server.init(
         std.testing.allocator,
@@ -249,17 +247,29 @@ test "create TLS server" {
             .cert_file = "server.crt",
             .key_file = "server.key",
         },
-        @ptrCast(&ws),
-        wrapperStruct.accept_callback,
+        @ptrCast(&test_state),
+        TestState.accept_callback,
     );
+    defer server.deinit();
+
+    test_state.server_ptr = &server;
     server.accept();
 
     const start_time = std.time.milliTimestamp();
-    const duration_ms = 2000;
+    const max_duration_ms = 10000;
 
-    while (std.time.milliTimestamp() - start_time < duration_ms) {
+    while (std.time.milliTimestamp() - start_time < max_duration_ms) {
         try loop.run(.once);
+
+        if (test_state.received_message) {
+            std.log.info("Test completed successfully - received WebSocket message", .{});
+            break;
+        }
     }
 
-    server.deinit();
+    std.testing.expect(test_state.received_message) catch {
+        std.log.err("Test completed without receiving WebSocket message", .{});
+        std.log.err("Try: websocat -k wss://127.0.0.1:8081", .{});
+        std.log.err("And send a message like 'hello'", .{});
+    };
 }
