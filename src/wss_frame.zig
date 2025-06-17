@@ -175,31 +175,6 @@ pub const WebSocketFrame = struct {
             allocator.free(self.payload);
         }
     }
-
-    pub fn toString(self: *const WebSocketFrame, allocator: std.mem.Allocator) ![]u8 {
-        const opcode_name = switch (self.opcode) {
-            .continuation => "continuation",
-            .text => "text",
-            .binary => "binary",
-            .close => "close",
-            .ping => "ping",
-            .pong => "pong",
-        };
-
-        const payload_preview = if (self.payload.len > 0) blk: {
-            const preview = try std.fmt.allocPrint(allocator, "\"{s}\"", .{self.payload[0..self.payload.len]});
-            break :blk preview;
-        } else "[]";
-        defer if (self.payload.len > 0) allocator.free(payload_preview);
-
-        const mask_str = if (self.masking_key) |mask| blk: {
-            const mask_buf = try std.fmt.allocPrint(allocator, "[{x:0>2}{x:0>2}{x:0>2}{x:0>2}]", .{ mask[0], mask[1], mask[2], mask[3] });
-            break :blk mask_buf;
-        } else "none";
-        defer if (self.masking_key != null) allocator.free(mask_str);
-
-        return std.fmt.allocPrint(allocator, "WebSocketFrame{{ fin: {}, opcode: {s}, masked: {}, payload_len: {}, mask: {s}, payload: {s} }}", .{ self.fin, opcode_name, self.masked, self.payload.len, mask_str, payload_preview });
-    }
 };
 
 pub fn createTextFrame(
