@@ -91,13 +91,11 @@ pub const TlsServer = struct {
         return self.handshake_complete;
     }
 
-    // Private helper methods
-
     fn cleanup(self: *TlsServer) void {
         if (self.ssl) |ssl| {
             c.SSL_free(ssl);
             self.ssl = null;
-            self.bio_read = null; // SSL_free also frees BIOs
+            self.bio_read = null;
             self.bio_write = null;
         }
         if (self.ssl_ctx) |ctx| {
@@ -121,17 +119,14 @@ pub const TlsServer = struct {
     fn configureSslContext(self: *TlsServer, ctx: *c.SSL_CTX) !void {
         _ = self;
 
-        // Set security options
         _ = c.SSL_CTX_set_options(ctx, c.SSL_OP_NO_SSLv2 | c.SSL_OP_NO_SSLv3);
         _ = c.SSL_CTX_set_min_proto_version(ctx, c.TLS1_2_VERSION);
         _ = c.SSL_CTX_set_max_proto_version(ctx, c.TLS1_2_VERSION);
 
-        // Set cipher suite
         if (c.SSL_CTX_set_cipher_list(ctx, "ECDHE-RSA-AES256-GCM-SHA384") != 1) {
             std.log.warn("Failed to set cipher list", .{});
         }
 
-        // Disable verification for testing
         c.SSL_CTX_set_verify(ctx, c.SSL_VERIFY_NONE, null);
     }
 
@@ -139,21 +134,18 @@ pub const TlsServer = struct {
         var cert_path = try self.createNullTerminatedPath(self.cert_file);
         var key_path = try self.createNullTerminatedPath(self.key_file);
 
-        // Load certificate
         if (c.SSL_CTX_use_certificate_file(ctx, &cert_path, c.SSL_FILETYPE_PEM) <= 0) {
-            std.log.err("Failed to load certificate file: {s}", .{self.cert_file});
+            std.log.err("Failed to load certificate file: {s}", .{cert_path});
             tls.logOpenSslError();
             return TlsError.CertificateLoadFailed;
         }
 
-        // Load private key
         if (c.SSL_CTX_use_PrivateKey_file(ctx, &key_path, c.SSL_FILETYPE_PEM) <= 0) {
-            std.log.err("Failed to load private key file: {s}", .{self.key_file});
+            std.log.err("Failed to load private key file: {s}", .{key_path});
             tls.logOpenSslError();
             return TlsError.PrivateKeyLoadFailed;
         }
 
-        // Verify key matches certificate
         if (c.SSL_CTX_check_private_key(ctx) != 1) {
             std.log.err("Private key does not match certificate", .{});
             tls.logOpenSslError();

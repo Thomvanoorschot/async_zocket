@@ -23,12 +23,10 @@ pub const TlsError = error{
 
 pub const BUFFER_SIZE = 4096;
 
-/// Initialize OpenSSL library
 pub fn initOpenSsl() void {
     _ = c.OPENSSL_init_ssl(c.OPENSSL_INIT_LOAD_SSL_STRINGS | c.OPENSSL_INIT_LOAD_CRYPTO_STRINGS, null);
 }
 
-/// Create a new BIO memory buffer
 pub fn createBio() !*c.BIO {
     return c.BIO_new(c.BIO_s_mem()) orelse {
         std.log.err("Failed to create BIO", .{});
@@ -36,7 +34,6 @@ pub fn createBio() !*c.BIO {
     };
 }
 
-/// Create a new SSL instance from an SSL context
 pub fn createSslInstance(ctx: *c.SSL_CTX) !*c.SSL {
     return c.SSL_new(ctx) orelse {
         std.log.err("Failed to create SSL instance", .{});
@@ -44,7 +41,6 @@ pub fn createSslInstance(ctx: *c.SSL_CTX) !*c.SSL {
     };
 }
 
-/// Write data to a BIO
 pub fn writeToBio(bio: *c.BIO, data: []const u8) !void {
     const written = c.BIO_write(bio, data.ptr, @intCast(data.len));
     if (written <= 0) {
@@ -53,7 +49,6 @@ pub fn writeToBio(bio: *c.BIO, data: []const u8) !void {
     }
 }
 
-/// Read data from a BIO into a buffer
 pub fn readFromBio(bio: *c.BIO, buffer: []u8) !usize {
     var total_read: usize = 0;
     var temp_buf: [BUFFER_SIZE]u8 = undefined;
@@ -73,7 +68,6 @@ pub fn readFromBio(bio: *c.BIO, buffer: []u8) !usize {
     return total_read;
 }
 
-/// Handle SSL read errors and return appropriate action
 pub fn handleSslReadError(ssl: *c.SSL, bytes_read: c_int) !?[]const u8 {
     const ssl_error = c.SSL_get_error(ssl, bytes_read);
 
@@ -88,13 +82,11 @@ pub fn handleSslReadError(ssl: *c.SSL, bytes_read: c_int) !?[]const u8 {
     };
 }
 
-/// Check if SSL operation needs more data (non-blocking)
 pub fn sslWantsMoreData(ssl: *c.SSL, result: c_int) bool {
     const ssl_error = c.SSL_get_error(ssl, result);
     return ssl_error == c.SSL_ERROR_WANT_READ or ssl_error == c.SSL_ERROR_WANT_WRITE;
 }
 
-/// Log OpenSSL errors from the error queue
 pub fn logOpenSslError() void {
     const err_code = c.ERR_get_error();
     if (err_code == 0) return;
@@ -104,11 +96,9 @@ pub fn logOpenSslError() void {
     std.log.err("OpenSSL error: {s}", .{std.mem.sliceTo(&err_buf, 0)});
 }
 
-/// Log detailed SSL error information including error queue and SSL state
 pub fn logDetailedSslError(ssl: *c.SSL) void {
     std.log.err("=== SSL Error Details ===", .{});
 
-    // Log error queue
     var error_count: u32 = 0;
     while (true) {
         const err_code = c.ERR_get_error();
@@ -124,7 +114,6 @@ pub fn logDetailedSslError(ssl: *c.SSL) void {
         std.log.err("No errors in OpenSSL queue", .{});
     }
 
-    // Log SSL state
     const state = c.SSL_get_state(ssl);
     const state_string = c.SSL_state_string_long(ssl);
     std.log.err("SSL State: {} ({s})", .{ state, @as([*:0]const u8, @ptrCast(state_string)) });
@@ -132,7 +121,6 @@ pub fn logDetailedSslError(ssl: *c.SSL) void {
     std.log.err("=== End SSL Error Details ===", .{});
 }
 
-/// Common buffer structure for TLS operations
 pub const TlsBuffers = struct {
     encrypted_buffer: [BUFFER_SIZE * 2]u8 = undefined,
     encrypted_len: usize = 0,
