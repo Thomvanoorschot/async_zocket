@@ -18,10 +18,11 @@ pub const TlsClient = struct {
     bio_write: *c.BIO,
     handshake_complete: bool = false,
     hostname: []const u8,
-
     buffers: tls.TlsBuffers = .{},
 
-    pub fn init(hostname: []const u8, options: TlsClientOptions) !TlsClient {
+    const Self = @This();
+
+    pub fn init(hostname: []const u8, options: TlsClientOptions) !Self {
         tls.initOpenSsl();
 
         const ctx = try createSslContext(options.verify_peer);
@@ -60,12 +61,12 @@ pub const TlsClient = struct {
         };
     }
 
-    pub fn deinit(self: *TlsClient) void {
+    pub fn deinit(self: *Self) void {
         c.SSL_free(self.ssl);
         c.SSL_CTX_free(self.ssl_ctx);
     }
 
-    pub fn startHandshake(self: *TlsClient) !?[]const u8 {
+    pub fn startHandshake(self: *Self) !?[]const u8 {
         c.SSL_set_connect_state(self.ssl);
         const handshake_result = c.SSL_do_handshake(self.ssl);
 
@@ -82,7 +83,7 @@ pub const TlsClient = struct {
         return try self.processOutgoing(null);
     }
 
-    pub fn processIncoming(self: *TlsClient, encrypted_data: []const u8) !?[]const u8 {
+    pub fn processIncoming(self: *Self, encrypted_data: []const u8) !?[]const u8 {
         if (encrypted_data.len == 0) return null;
 
         try tls.writeToBio(self.bio_read, encrypted_data);
@@ -96,7 +97,7 @@ pub const TlsClient = struct {
         return try self.readDecryptedData();
     }
 
-    pub fn processOutgoing(self: *TlsClient, plaintext: ?[]const u8) !?[]const u8 {
+    pub fn processOutgoing(self: *Self, plaintext: ?[]const u8) !?[]const u8 {
         if (plaintext) |data| {
             try self.writeEncryptedData(data);
         }
@@ -104,7 +105,7 @@ pub const TlsClient = struct {
         return self.readFromWriteBio();
     }
 
-    pub fn isHandshakeComplete(self: *TlsClient) bool {
+    pub fn isHandshakeComplete(self: *Self) bool {
         return self.handshake_complete;
     }
 
@@ -147,7 +148,7 @@ pub const TlsClient = struct {
         }
     }
 
-    fn performHandshake(self: *TlsClient) !void {
+    fn performHandshake(self: *Self) !void {
         const handshake_result = c.SSL_do_handshake(self.ssl);
 
         if (handshake_result == 1) {
@@ -162,14 +163,14 @@ pub const TlsClient = struct {
         }
     }
 
-    fn verifyCertificate(self: *TlsClient) void {
+    fn verifyCertificate(self: *Self) void {
         const verify_result = c.SSL_get_verify_result(self.ssl);
         if (verify_result != c.X509_V_OK) {
             std.log.warn("Certificate verification failed: {}", .{verify_result});
         }
     }
 
-    fn readDecryptedData(self: *TlsClient) !?[]const u8 {
+    fn readDecryptedData(self: *Self) !?[]const u8 {
         self.buffers.resetDecrypted();
         var temp_buf: [BUFFER_SIZE]u8 = undefined;
 
@@ -187,7 +188,7 @@ pub const TlsClient = struct {
         return try tls.handleSslReadError(self.ssl, bytes_read);
     }
 
-    fn writeEncryptedData(self: *TlsClient, data: []const u8) !void {
+    fn writeEncryptedData(self: *Self, data: []const u8) !void {
         if (!self.handshake_complete) {
             std.log.warn("Attempt to encrypt data before handshake complete", .{});
             return TlsError.TlsNotReady;
@@ -202,7 +203,7 @@ pub const TlsClient = struct {
         return TlsError.TlsWriteFailed;
     }
 
-    fn readFromWriteBio(self: *TlsClient) !?[]const u8 {
+    fn readFromWriteBio(self: *Self) !?[]const u8 {
         self.buffers.resetEncrypted();
         const encrypted_len = try tls.readFromBio(self.bio_write, &self.buffers.encrypted_buffer);
         self.buffers.encrypted_len = encrypted_len;

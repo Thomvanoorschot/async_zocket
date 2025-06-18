@@ -48,6 +48,7 @@ pub const Client = struct {
 
     tls_client: ?tls_clnt.TlsClient = null,
 
+    const Self = @This();
     pub fn init(
         allocator: std.mem.Allocator,
         loop: *xev.Loop,
@@ -57,7 +58,7 @@ pub const Client = struct {
             payload: []const u8,
         ) anyerror!void,
         callback_context: *anyopaque,
-    ) !Client {
+    ) !Self {
         const address = std.net.Address.parseIp4(config.host, config.port) catch blk: {
             const addr_list = try std.net.getAddressList(allocator, config.host, config.port);
             defer addr_list.deinit();
@@ -69,7 +70,7 @@ pub const Client = struct {
             break :blk addr_list.addrs[0];
         };
 
-        return .{
+        const self = Self{
             .allocator = allocator,
             .loop = loop,
             .address = address,
@@ -84,40 +85,41 @@ pub const Client = struct {
 
             .pending_websocket_writes = std.ArrayList([]const u8).init(allocator),
         };
+        return self;
     }
 
-    pub fn deinit(client: *Client) void {
-        client.connection_state = .closing;
-        client.cancelCompletion(&client.ping_completion);
-        client_tcp.closeSocket(client);
+    pub fn deinit(self: *Self) void {
+        self.connection_state = .closing;
+        self.cancelCompletion(&self.ping_completion);
+        client_tcp.closeSocket(self);
     }
-    pub fn deinitMemory(client: *Client) void {
-        for (client.pending_websocket_writes.items) |item| {
-            client.allocator.free(item);
+    pub fn deinitMemory(self: *Self) void {
+        for (self.pending_websocket_writes.items) |item| {
+            self.allocator.free(item);
         }
-        client.pending_websocket_writes.deinit();
+        self.pending_websocket_writes.deinit();
 
-        if (client.incomplete_frame_buffer.len > 0) {
-            client.allocator.free(client.incomplete_frame_buffer);
-        }
-
-        if (client.incomplete_http_response_buffer.len > 0) {
-            client.allocator.free(client.incomplete_http_response_buffer);
+        if (self.incomplete_frame_buffer.len > 0) {
+            self.allocator.free(self.incomplete_frame_buffer);
         }
 
-        client.queued_write_pool.deinit();
+        if (self.incomplete_http_response_buffer.len > 0) {
+            self.allocator.free(self.incomplete_http_response_buffer);
+        }
 
-        if (client.tls_client != null) {
-            client.tls_client.?.deinit();
+        self.queued_write_pool.deinit();
+
+        if (self.tls_client != null) {
+            self.tls_client.?.deinit();
         }
     }
 
-    pub fn connect(client: *Client) void {
+    pub fn connect(self: *Self) void {
         client_tcp.connect(
-            client,
-            client.loop,
-            &client.connect_completion,
-            client.address,
+            self,
+            self.loop,
+            &self.connect_completion,
+            self.address,
         );
     }
 

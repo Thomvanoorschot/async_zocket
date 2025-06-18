@@ -63,22 +63,8 @@ pub const ClientConnection = struct {
         };
 
         if (server.options.use_tls) {
-            if (server.options.cert_file == null or server.options.key_file == null) {
-                std.log.err("TLS enabled but certificate or key file not provided", .{});
-                allocator.destroy(self);
-                return error.TlsCertificateRequired;
-            }
-            self.tls_server = tls_server.TlsServer.init(server.options.cert_file.?, server.options.key_file.?) catch |err| {
-                std.log.err("Failed to initialize TLS server: {}", .{err});
-                allocator.destroy(self);
-                return err;
-            };
-
-            self.tls_server.?.initConnection() catch |err| {
-                std.log.err("Failed to initialize TLS connection: {}", .{err});
-                allocator.destroy(self);
-                return err;
-            };
+            self.tls_server = try tls_server.TlsServer.init(server.options.cert_file.?, server.options.key_file.?);
+            try self.tls_server.?.initConnection();
         }
 
         return self;

@@ -17,19 +17,25 @@ pub const TlsServer = struct {
     bio_read: ?*c.BIO = null,
     bio_write: ?*c.BIO = null,
     handshake_complete: bool = false,
-
     buffers: tls.TlsBuffers = .{},
 
-    pub fn init(cert_file: []const u8, key_file: []const u8) !TlsServer {
+    const Self = @This();
+
+    pub fn init(cert_file: []const u8, key_file: []const u8) !Self {
+        if (cert_file.len == 0 or key_file.len == 0) {
+            return error.TlsCertificateRequired;
+        }
+
         tls.initOpenSsl();
 
-        return .{
+        const self = Self{
             .cert_file = cert_file,
             .key_file = key_file,
         };
+        return self;
     }
 
-    pub fn initConnection(self: *TlsServer) !void {
+    pub fn initConnection(self: *Self) !void {
         self.cleanup();
 
         const ctx = try self.createSslContext();
@@ -54,16 +60,16 @@ pub const TlsServer = struct {
         self.handshake_complete = false;
     }
 
-    pub fn deinit(self: *TlsServer) void {
+    pub fn deinit(self: *Self) void {
         self.cleanup();
     }
 
-    pub fn startHandshake(self: *TlsServer) !?[]const u8 {
+    pub fn startHandshake(self: *Self) !?[]const u8 {
         if (self.ssl == null) return TlsError.TlsConnectionFailed;
         return null;
     }
 
-    pub fn processIncoming(self: *TlsServer, encrypted_data: []const u8) !?[]const u8 {
+    pub fn processIncoming(self: *Self, encrypted_data: []const u8) !?[]const u8 {
         if (encrypted_data.len == 0) return null;
         if (self.ssl == null or self.bio_read == null) return TlsError.TlsConnectionFailed;
 
@@ -77,7 +83,7 @@ pub const TlsServer = struct {
         return try self.readDecryptedData();
     }
 
-    pub fn processOutgoing(self: *TlsServer, plaintext: ?[]const u8) !?[]const u8 {
+    pub fn processOutgoing(self: *Self, plaintext: ?[]const u8) !?[]const u8 {
         if (self.ssl == null) return TlsError.TlsConnectionFailed;
 
         if (plaintext) |data| {
@@ -87,11 +93,11 @@ pub const TlsServer = struct {
         return try self.readFromWriteBio();
     }
 
-    pub fn isHandshakeComplete(self: *TlsServer) bool {
+    pub fn isHandshakeComplete(self: *Self) bool {
         return self.handshake_complete;
     }
 
-    fn cleanup(self: *TlsServer) void {
+    fn cleanup(self: *Self) void {
         if (self.ssl) |ssl| {
             c.SSL_free(ssl);
             self.ssl = null;
@@ -104,7 +110,7 @@ pub const TlsServer = struct {
         }
     }
 
-    fn createSslContext(self: *TlsServer) !*c.SSL_CTX {
+    fn createSslContext(self: *Self) !*c.SSL_CTX {
         const method = c.TLS_server_method();
         const ctx = c.SSL_CTX_new(method) orelse {
             std.log.err("Failed to create SSL context", .{});
@@ -116,7 +122,7 @@ pub const TlsServer = struct {
         return ctx;
     }
 
-    fn configureSslContext(self: *TlsServer, ctx: *c.SSL_CTX) !void {
+    fn configureSslContext(self: *Self, ctx: *c.SSL_CTX) !void {
         _ = self;
 
         _ = c.SSL_CTX_set_options(ctx, c.SSL_OP_NO_SSLv2 | c.SSL_OP_NO_SSLv3);
@@ -130,7 +136,7 @@ pub const TlsServer = struct {
         c.SSL_CTX_set_verify(ctx, c.SSL_VERIFY_NONE, null);
     }
 
-    fn loadCertificates(self: *TlsServer, ctx: *c.SSL_CTX) !void {
+    fn loadCertificates(self: *Self, ctx: *c.SSL_CTX) !void {
         var cert_path = try self.createNullTerminatedPath(self.cert_file);
         var key_path = try self.createNullTerminatedPath(self.key_file);
 
@@ -153,7 +159,7 @@ pub const TlsServer = struct {
         }
     }
 
-    fn createNullTerminatedPath(self: *TlsServer, path: []const u8) ![MAX_PATH_LEN:0]u8 {
+    fn createNullTerminatedPath(self: *Self, path: []const u8) ![MAX_PATH_LEN:0]u8 {
         _ = self;
         if (path.len >= MAX_PATH_LEN) return TlsError.CertificateLoadFailed;
 
@@ -163,7 +169,7 @@ pub const TlsServer = struct {
         return result;
     }
 
-    fn attemptHandshake(self: *TlsServer) !void {
+    fn attemptHandshake(self: *Self) !void {
         const handshake_result = c.SSL_do_handshake(self.ssl.?);
 
         if (handshake_result == 1) {
@@ -183,7 +189,7 @@ pub const TlsServer = struct {
         }
     }
 
-    fn readDecryptedData(self: *TlsServer) !?[]const u8 {
+    fn readDecryptedData(self: *Self) !?[]const u8 {
         self.buffers.resetDecrypted();
         var temp_buf: [BUFFER_SIZE]u8 = undefined;
 
@@ -201,7 +207,7 @@ pub const TlsServer = struct {
         return try tls.handleSslReadError(self.ssl.?, bytes_read);
     }
 
-    fn writeEncryptedData(self: *TlsServer, data: []const u8) !void {
+    fn writeEncryptedData(self: *Self, data: []const u8) !void {
         if (!self.handshake_complete) return TlsError.TlsNotReady;
 
         const bytes_written = c.SSL_write(self.ssl.?, data.ptr, @intCast(data.len));
@@ -215,7 +221,7 @@ pub const TlsServer = struct {
         return TlsError.TlsWriteFailed;
     }
 
-    fn readFromWriteBio(self: *TlsServer) !?[]const u8 {
+    fn readFromWriteBio(self: *Self) !?[]const u8 {
         self.buffers.resetEncrypted();
         const encrypted_len = try tls.readFromBio(self.bio_write.?, &self.buffers.encrypted_buffer);
         self.buffers.encrypted_len = encrypted_len;

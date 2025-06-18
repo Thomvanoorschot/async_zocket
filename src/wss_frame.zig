@@ -37,7 +37,8 @@ pub const WebSocketFrame = struct {
     total_frame_size: usize = undefined,
     outgoing: bool = false,
 
-    pub fn parse(data: []const u8, allocator: std.mem.Allocator) !WebSocketFrame {
+    const Self = @This();
+    pub fn parse(data: []const u8, allocator: std.mem.Allocator) !Self {
         if (data.len < 2) return error.InsufficientData;
 
         const first_byte = data[0];
@@ -96,7 +97,7 @@ pub const WebSocketFrame = struct {
             payload = @constCast(data[header_size .. header_size + payload_len]);
         }
 
-        return WebSocketFrame{
+        return Self{
             .fin = fin,
             .rsv1 = rsv1,
             .rsv2 = rsv2,
@@ -109,7 +110,7 @@ pub const WebSocketFrame = struct {
         };
     }
 
-    pub fn getSerializedSize(self: *const WebSocketFrame) usize {
+    pub fn getSerializedSize(self: *const Self) usize {
         var size: usize = 2;
 
         if (self.payload.len > 125) {
@@ -128,7 +129,7 @@ pub const WebSocketFrame = struct {
         return size;
     }
 
-    pub fn serialize(self: *const WebSocketFrame, allocator: std.mem.Allocator) ![]u8 {
+    pub fn serialize(self: *const Self, allocator: std.mem.Allocator) ![]u8 {
         const total_size = self.getSerializedSize();
         var frame = try allocator.alloc(u8, total_size);
         errdefer allocator.free(frame);
@@ -170,7 +171,7 @@ pub const WebSocketFrame = struct {
 
         return frame;
     }
-    pub fn deinit(self: *WebSocketFrame, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
         if (self.outgoing or self.masked) {
             allocator.free(self.payload);
         }
