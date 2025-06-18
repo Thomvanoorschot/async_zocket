@@ -247,8 +247,7 @@ test "create server" {
 
     try std.testing.expect(test_state.server_received_message);
 }
-
-test "create TLS server" {
+test "create server with TLS" {
     std.testing.log_level = .info;
     var loop = try xev.Loop.init(.{});
     defer loop.deinit();
@@ -261,11 +260,14 @@ test "create TLS server" {
         client_ptr: ?*Client = null,
 
         fn server_accept_callback(
-            _: ?*anyopaque,
+            ctx_: ?*anyopaque,
             _: *xev.Loop,
             _: *xev.Completion,
-            _: *ClientConnection,
+            cc: *ClientConnection,
         ) xev.CallbackAction {
+            const ctx = @as(*Self, @ptrCast(@alignCast(ctx_.?)));
+            cc.setReadCallback(ctx, server_read_callback);
+            cc.read();
             return .rearm;
         }
 
@@ -274,7 +276,7 @@ test "create TLS server" {
             payload: []const u8,
         ) !void {
             const self = @as(*Self, @ptrCast(@alignCast(context.?)));
-            std.log.info("TLS Server received: {s}", .{payload});
+            std.log.info("Server received: {s}", .{payload});
             self.server_received_message = true;
         }
 
@@ -283,7 +285,7 @@ test "create TLS server" {
             payload: []const u8,
         ) !void {
             const self = @as(*Self, @ptrCast(@alignCast(context)));
-            std.log.info("TLS Client received: {s}", .{payload});
+            std.log.info("Client received: {s}", .{payload});
             self.client_received_message = true;
         }
     };
@@ -295,7 +297,7 @@ test "create TLS server" {
         &loop,
         .{
             .host = "127.0.0.1",
-            .port = 8084,
+            .port = 8083,
             .max_connections = 10,
             .use_tls = true,
             .cert_file = "server.crt",
@@ -314,10 +316,10 @@ test "create TLS server" {
         &loop,
         .{
             .host = "127.0.0.1",
-            .port = 8084,
+            .port = 8083,
             .path = "/",
             .use_tls = true,
-            .verify_peer = false,
+            .verify_certificate = false,
         },
         TestState.client_read_callback,
         @ptrCast(&test_state),
@@ -338,13 +340,13 @@ test "create TLS server" {
         try loop.run(.no_wait);
 
         if (!message_sent and client.connection_state == .ready) {
-            try client.write("Hello from TLS test client!");
+            try client.write("Hello from test client!");
             message_sent = true;
-            std.log.info("TLS test message sent to server", .{});
+            std.log.info("Test message sent to server", .{});
         }
 
         if (test_state.server_received_message) {
-            std.log.info("TLS test completed successfully - server received message", .{});
+            std.log.info("Test completed successfully - server received message", .{});
             break;
         }
     }

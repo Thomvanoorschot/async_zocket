@@ -64,7 +64,6 @@ pub const ClientConnection = struct {
 
         if (server.options.use_tls) {
             self.tls_server = try tls_server.TlsServer.init(server.options.cert_file.?, server.options.key_file.?);
-            try self.tls_server.?.initConnection();
         }
 
         return self;

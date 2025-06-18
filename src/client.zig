@@ -13,7 +13,7 @@ const ClientConfig = struct {
     port: u16,
     path: []const u8,
     use_tls: bool = false,
-    verify_peer: bool = true,
+    verify_certificate: bool = true,
 };
 
 // TODO This is a bit of a hack

@@ -28,14 +28,10 @@ pub const TlsServer = struct {
 
         tls.initOpenSsl();
 
-        const self = Self{
+        var self = Self{
             .cert_file = cert_file,
             .key_file = key_file,
         };
-        return self;
-    }
-
-    pub fn initConnection(self: *Self) !void {
         self.cleanup();
 
         const ctx = try self.createSslContext();
@@ -58,6 +54,7 @@ pub const TlsServer = struct {
         self.bio_read = bio_read;
         self.bio_write = bio_write;
         self.handshake_complete = false;
+        return self;
     }
 
     pub fn deinit(self: *Self) void {

@@ -8,7 +8,7 @@ pub const TlsError = tls.TlsError;
 const BUFFER_SIZE = tls.BUFFER_SIZE;
 
 const TlsClientOptions = struct {
-    verify_peer: bool = true,
+    verify_certificate: bool = true,
 };
 
 pub const TlsClient = struct {
@@ -25,7 +25,7 @@ pub const TlsClient = struct {
     pub fn init(hostname: []const u8, options: TlsClientOptions) !Self {
         tls.initOpenSsl();
 
-        const ctx = try createSslContext(options.verify_peer);
+        const ctx = try createSslContext(options.verify_certificate);
         const ssl = createSslConnection(ctx) catch |err| {
             c.SSL_CTX_free(ctx);
             return err;
@@ -109,14 +109,14 @@ pub const TlsClient = struct {
         return self.handshake_complete;
     }
 
-    fn createSslContext(verify_peer: bool) !*c.SSL_CTX {
+    fn createSslContext(verify_certificate: bool) !*c.SSL_CTX {
         const method = c.TLS_client_method();
         const ctx = c.SSL_CTX_new(method) orelse {
             std.log.err("Failed to create SSL context", .{});
             return TlsError.TlsContextFailed;
         };
 
-        if (verify_peer) {
+        if (verify_certificate) {
             c.SSL_CTX_set_verify(ctx, c.SSL_VERIFY_PEER, null);
             if (c.SSL_CTX_set_default_verify_paths(ctx) != 1) {
                 std.log.warn("Failed to set default verify paths", .{});

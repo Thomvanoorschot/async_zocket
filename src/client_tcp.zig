@@ -43,7 +43,7 @@ fn onConnected(
 
     if (client.config.use_tls) {
         client.tls_client = tls_clnt.TlsClient.init(client.config.host, .{
-            .verify_peer = client.config.verify_peer,
+            .verify_certificate = client.config.verify_certificate,
         }) catch |err| {
             std.log.err("TLS init error: {s}\n", .{@errorName(err)});
             return .disarm;
