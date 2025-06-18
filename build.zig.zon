@@ -8,13 +8,9 @@
             .url = "https://github.com/mitchellh/libxev/archive/main.tar.gz",
             .hash = "libxev-0.0.0-86vtc87kEgBxgbJ1RI1R6Elynb7zydCgNR8dt3uw01My",
         },
-        .boringssl = .{
-            .path = "../boringssl",
+        .boring_tls = .{
+            .path = "../boring_tls",
         },
-        // .boringssl = .{
-        //     .url = "https://github.com/google/boringssl/archive/refs/tags/0.20250514.0.tar.gz",
-        //     .hash = "1220bc773c53e74b5225b0dd0b2cedbf6410516ea95c1b5155c5785f7f2c9df2f250",
-        // },
     },
     .paths = .{
         "build.zig",

@@ -4,7 +4,8 @@ const svr = @import("server.zig");
 const wss_frame = @import("wss_frame.zig");
 const server_wss = @import("server_wss.zig");
 const core_types = @import("core_types.zig");
-const tls_server = @import("tls_server.zig");
+const boring_tls = @import("boring_tls");
+const tls_server = boring_tls.tls_server;
 
 const TCP = xev.TCP;
 const Completion = xev.Completion;

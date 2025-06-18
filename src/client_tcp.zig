@@ -3,7 +3,8 @@ const clnt = @import("client.zig");
 const xev = @import("xev");
 const wss = @import("client_wss.zig");
 const core_types = @import("core_types.zig");
-const tls_clnt = @import("tls_client.zig");
+const boring_tls = @import("boring_tls");
+const tls_clnt = boring_tls.tls_client;
 
 const Client = clnt.Client;
 const Error = core_types.Error;

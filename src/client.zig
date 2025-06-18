@@ -3,7 +3,8 @@ const xev = @import("xev");
 const client_tcp = @import("client_tcp.zig");
 const wss = @import("client_wss.zig");
 const core_types = @import("core_types.zig");
-const tls_clnt = @import("tls_client.zig");
+const boring_tls = @import("boring_tls");
+const tls_clnt = boring_tls.tls_client;
 
 const QueuedWrite = core_types.QueuedWrite;
 const ConnectionState = core_types.ConnectionState;

@@ -247,6 +247,9 @@ test "create server" {
 
     try std.testing.expect(test_state.server_received_message);
 }
+
+// TODO I have yet to get this to work without sending a message to the server myself
+// websocat -k wss://127.0.0.1:8083
 test "create server with TLS" {
     std.testing.log_level = .info;
     var loop = try xev.Loop.init(.{});
