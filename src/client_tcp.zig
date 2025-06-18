@@ -42,7 +42,9 @@ fn onConnected(
     client.connection_state = .connecting;
 
     if (client.config.use_tls) {
-        client.tls_client = tls_clnt.TlsClient.init(client.config.host) catch |err| {
+        client.tls_client = tls_clnt.TlsClient.init(client.config.host, .{
+            .verify_peer = client.config.verify_peer,
+        }) catch |err| {
             std.log.err("TLS init error: {s}\n", .{@errorName(err)});
             return .disarm;
         };
@@ -96,8 +98,6 @@ fn startWebSocketUpgrade(client: *Client, l: *xev.Loop, socket: xev.TCP) xev.Cal
         client.allocator,
         client.config.host,
         client.config.path,
-        // "ws.kraken.com",
-        // "/v2",
     ) catch |err| {
         std.log.err("Failed to generate upgrade request: {s}\n", .{@errorName(err)});
         return .disarm;

@@ -128,7 +128,9 @@ pub const ClientConnection = struct {
                         inner_self.close();
                         return .disarm;
                     }
-                    std.log.err("Failed to read: {any}", .{err});
+                    if (err != error.EOF) {
+                        std.log.err("Failed to read: {any}", .{err});
+                    }
                     inner_self.close();
                     return .disarm;
                 };

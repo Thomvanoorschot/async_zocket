@@ -25,6 +25,7 @@ pub const Server = struct {
     listen_socket: TCP,
     accept_completion: Completion = undefined,
     connections: std.ArrayList(*ClientConnection),
+    is_shutting_down: bool = false,
 
     cb_ctx: *anyopaque,
     on_accept_cb: *const fn (
@@ -67,8 +68,13 @@ pub const Server = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        while (self.connections.pop()) |client_conn| {
-            client_conn.close();
+        self.is_shutting_down = true;
+
+        // Clean up connections without calling close() to avoid circular cleanup
+        for (self.connections.items) |client_conn| {
+            client_conn.is_closing = true;
+            client_conn.deinit();
+            self.allocator.destroy(client_conn);
         }
         self.connections.deinit();
     }
@@ -124,13 +130,15 @@ pub const Server = struct {
     }
 
     pub fn returnConnection(self: *Self, client_conn: *ClientConnection) void {
-        defer self.allocator.destroy(client_conn);
+        if (self.is_shutting_down) return;
         for (self.connections.items, 0..) |conn, i| {
             if (conn == client_conn) {
                 _ = self.connections.swapRemove(i);
                 break;
             }
         }
+        std.log.info("Returning connection {d}/{d}", .{ self.connections.items.len, self.options.max_connections });
+        self.allocator.destroy(client_conn);
     }
 };
 
@@ -207,7 +215,10 @@ test "create server" {
         TestState.client_read_callback,
         @ptrCast(&test_state),
     );
-    defer client.deinitMemory();
+    defer {
+        client.deinit();
+        client.deinitMemory();
+    }
 
     test_state.client_ptr = &client;
     client.connect();
@@ -233,8 +244,6 @@ test "create server" {
         }
     }
 
-    client.deinit();
-
     // Give some time for cleanup
     const cleanup_start = std.time.milliTimestamp();
     while (std.time.milliTimestamp() - cleanup_start < 1000) {
@@ -257,14 +266,11 @@ test "create TLS server" {
         client_ptr: ?*Client = null,
 
         fn server_accept_callback(
-            ctx_: ?*anyopaque,
+            _: ?*anyopaque,
             _: *xev.Loop,
             _: *xev.Completion,
-            cc: *ClientConnection,
+            _: *ClientConnection,
         ) xev.CallbackAction {
-            const ctx = @as(*Self, @ptrCast(@alignCast(ctx_.?)));
-            cc.setReadCallback(ctx, server_read_callback);
-            cc.read();
             return .rearm;
         }
 
@@ -294,7 +300,7 @@ test "create TLS server" {
         &loop,
         .{
             .host = "127.0.0.1",
-            .port = 8083,
+            .port = 8084,
             .max_connections = 10,
             .use_tls = true,
             .cert_file = "server.crt",
@@ -313,20 +319,24 @@ test "create TLS server" {
         &loop,
         .{
             .host = "127.0.0.1",
-            .port = 8083,
+            .port = 8084,
             .path = "/",
             .use_tls = true,
+            .verify_peer = false,
         },
         TestState.client_read_callback,
         @ptrCast(&test_state),
     );
-    defer client.deinitMemory();
+    defer {
+        client.deinit();
+        client.deinitMemory();
+    }
 
     test_state.client_ptr = &client;
     client.connect();
 
     const start_time = std.time.milliTimestamp();
-    const max_duration_ms = 10000;
+    const max_duration_ms = 5000;
     var message_sent = false;
 
     while (std.time.milliTimestamp() - start_time < max_duration_ms) {
@@ -339,26 +349,16 @@ test "create TLS server" {
             std.log.info("TLS test message sent to server", .{});
         }
 
-        // Break if we received the message
         if (test_state.server_received_message) {
             std.log.info("TLS test completed successfully - server received message", .{});
             break;
         }
     }
 
-    client.deinit();
-
-    // Give some time for cleanup
     const cleanup_start = std.time.milliTimestamp();
     while (std.time.milliTimestamp() - cleanup_start < 1000) {
         try loop.run(.no_wait);
     }
 
-    // For TLS test, we'll make it a soft failure since it requires certificates
-    if (!test_state.server_received_message) {
-        std.log.warn("TLS test did not complete - this may be expected if certificates are not available", .{});
-        std.log.warn("To test TLS functionality, ensure server.crt and server.key are present", .{});
-    } else {
-        try std.testing.expect(test_state.server_received_message);
-    }
+    try std.testing.expect(test_state.server_received_message);
 }

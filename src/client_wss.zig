@@ -71,7 +71,7 @@ fn onRead(
 ) CallbackAction {
     const client = client_.?;
     const n = r catch |err| {
-        if (err == Error.EOF) {} else {
+        if (err != error.EOF) {
             std.log.err("Read error: {s}\n", .{@errorName(err)});
         }
         closeSocket(client);
