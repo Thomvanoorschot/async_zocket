@@ -44,6 +44,7 @@ pub const Client = struct {
 
     pending_websocket_writes: std.ArrayList([]const u8),
     incomplete_frame_buffer: []u8 = &[_]u8{},
+    incomplete_http_response_buffer: []u8 = &[_]u8{},
 
     tls_client: ?tls_clnt.TlsClient = null,
 
@@ -98,6 +99,10 @@ pub const Client = struct {
 
         if (client.incomplete_frame_buffer.len > 0) {
             client.allocator.free(client.incomplete_frame_buffer);
+        }
+
+        if (client.incomplete_http_response_buffer.len > 0) {
+            client.allocator.free(client.incomplete_http_response_buffer);
         }
 
         client.queued_write_pool.deinit();

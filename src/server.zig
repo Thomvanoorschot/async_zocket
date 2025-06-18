@@ -70,7 +70,6 @@ pub const Server = struct {
     pub fn deinit(self: *Self) void {
         self.is_shutting_down = true;
 
-        // Clean up connections without calling close() to avoid circular cleanup
         for (self.connections.items) |client_conn| {
             client_conn.is_closing = true;
             client_conn.deinit();
@@ -107,7 +106,6 @@ pub const Server = struct {
             client_socket,
         ) catch |err| {
             std.log.err("Failed to allocate memory for client connection: {s}", .{@errorName(err)});
-            // client_socket.close();
             return .rearm;
         };
 
@@ -230,21 +228,18 @@ test "create server" {
     while (std.time.milliTimestamp() - start_time < max_duration_ms) {
         try loop.run(.no_wait);
 
-        // Send message once client is connected
         if (!message_sent and client.connection_state == .ready) {
             try client.write("Hello from test client!");
             message_sent = true;
             std.log.info("Test message sent to server", .{});
         }
 
-        // Break if we received the message
         if (test_state.server_received_message) {
             std.log.info("Test completed successfully - server received message", .{});
             break;
         }
     }
 
-    // Give some time for cleanup
     const cleanup_start = std.time.milliTimestamp();
     while (std.time.milliTimestamp() - cleanup_start < 1000) {
         try loop.run(.no_wait);
@@ -342,7 +337,6 @@ test "create TLS server" {
     while (std.time.milliTimestamp() - start_time < max_duration_ms) {
         try loop.run(.no_wait);
 
-        // Send message once client is connected
         if (!message_sent and client.connection_state == .ready) {
             try client.write("Hello from TLS test client!");
             message_sent = true;

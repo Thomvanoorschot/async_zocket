@@ -312,32 +312,73 @@ fn onWebsocketUpgradeRead(
         }
     } else raw_response;
 
+    var complete_response_data: []const u8 = undefined;
+    if (client.incomplete_http_response_buffer.len > 0) {
+        const concatenated = std.mem.concat(client.allocator, u8, &.{ client.incomplete_http_response_buffer, response_data }) catch |err| {
+            std.log.err("Failed to concatenate HTTP response data: {s}\n", .{@errorName(err)});
+            closeSocket(client);
+            return .disarm;
+        };
+        client.allocator.free(client.incomplete_http_response_buffer);
+        client.incomplete_http_response_buffer = &[_]u8{};
+        complete_response_data = concatenated;
+    } else {
+        complete_response_data = response_data;
+    }
+
     const header_end_marker = "\r\n\r\n";
-    const header_end_index = std.mem.indexOf(u8, response_data, header_end_marker);
+    const header_end_index = std.mem.indexOf(u8, complete_response_data, header_end_marker);
     if (header_end_index == null) {
-        std.log.err("Incomplete HTTP response received.\n", .{});
-        closeSocket(client);
+        client.incomplete_http_response_buffer = client.allocator.dupe(u8, complete_response_data) catch |err| {
+            std.log.err("Failed to store incomplete HTTP response: {s}\n", .{@errorName(err)});
+            closeSocket(client);
+            return .disarm;
+        };
+
+        if (client.incomplete_http_response_buffer.ptr != complete_response_data.ptr) {
+            client.allocator.free(complete_response_data);
+        }
+
+        client.socket.read(
+            l,
+            c,
+            .{ .slice = &client.read_buf },
+            Client,
+            client,
+            onWebsocketUpgradeRead,
+        );
         return .disarm;
     }
 
-    const header_part = response_data[0..header_end_index.?];
+    const header_part = complete_response_data[0..header_end_index.?];
     const body_part_start_index = header_end_index.? + header_end_marker.len;
 
     if (std.mem.indexOf(u8, header_part, "101 Switching Protocols") == null) {
         std.log.err("WebSocket upgrade failed. Server response:\n{s}\n", .{header_part});
+        if (complete_response_data.ptr != response_data.ptr) {
+            client.allocator.free(complete_response_data);
+        }
         closeSocket(client);
         return .disarm;
     }
 
     wss.handleConnectionEstablished(
         client,
-        response_data,
+        complete_response_data,
         body_part_start_index,
     ) catch |err| {
         std.log.err("Error handling connection established: {s}\n", .{@errorName(err)});
+        if (complete_response_data.ptr != response_data.ptr) {
+            client.allocator.free(complete_response_data);
+        }
         closeSocket(client);
         return .disarm;
     };
+
+    if (complete_response_data.ptr != response_data.ptr) {
+        client.allocator.free(complete_response_data);
+    }
+
     return .disarm;
 }
 

@@ -41,7 +41,6 @@ pub const ClientConnection = struct {
     tls_server: ?tls_server.TlsServer = null,
     tls_handshake_complete: bool = false,
 
-    // Add a field to handle incomplete frames
     incomplete_frame_buffer: []u8 = &[_]u8{},
     is_closing: bool = false,
 
@@ -63,7 +62,6 @@ pub const ClientConnection = struct {
             .queued_write_pool = std.heap.MemoryPool(QueuedWrite).init(allocator),
         };
 
-        // Initialize TLS if server uses TLS
         if (server.options.use_tls) {
             if (server.options.cert_file == null or server.options.key_file == null) {
                 std.log.err("TLS enabled but certificate or key file not provided", .{});
@@ -76,7 +74,6 @@ pub const ClientConnection = struct {
                 return err;
             };
 
-            // Initialize the connection-specific SSL state
             self.tls_server.?.initConnection() catch |err| {
                 std.log.err("Failed to initialize TLS connection: {}", .{err});
                 allocator.destroy(self);
@@ -140,25 +137,20 @@ pub const ClientConnection = struct {
                     return .disarm;
                 }
 
-                // Handle TLS if enabled
                 var processed_data: ?[]const u8 = null;
                 if (inner_self.tls_server) |*tls| {
-                    // Process incoming encrypted data
                     const decrypted = tls.processIncoming(buf.slice[0..bytes_read]) catch |err| {
                         std.log.err("TLS processing failed: {}", .{err});
-                        // Don't close immediately, log the error and try to continue
                         if (err == tls_server.TlsError.TlsHandshakeFailed or
                             err == tls_server.TlsError.TlsConnectionClosed)
                         {
                             inner_self.close();
                             return .disarm;
                         }
-                        // For other errors, try to continue
                         inner_self.read();
                         return .disarm;
                     };
 
-                    // Always check for outgoing data after processing incoming data
                     const encrypted_response = tls.processOutgoing(null) catch |err| {
                         std.log.err("TLS outgoing processing failed: {}", .{err});
                         inner_self.close();
@@ -203,7 +195,6 @@ pub const ClientConnection = struct {
                         return .disarm;
                     }
 
-                    // Handle WebSocket frames - call handleWebSocketData instead of user callback
                     inner_self.handleWebSocketData(data) catch |err| {
                         std.log.err("Failed to process WebSocket data: {any}", .{err});
                         inner_self.close();
@@ -211,7 +202,6 @@ pub const ClientConnection = struct {
                     };
                 }
 
-                // Continue reading
                 inner_self.read();
                 return .disarm;
             }
@@ -239,7 +229,6 @@ pub const ClientConnection = struct {
                 return error.TlsHandshakeNotComplete;
             }
 
-            // Encrypt the frame data
             const encrypted_data = tls.processOutgoing(frame_data) catch |err| {
                 std.log.err("TLS encryption failed: {any}", .{err});
                 return err;
@@ -354,9 +343,6 @@ pub const ClientConnection = struct {
             self.close();
             return .disarm;
         };
-        // if (!self.keep_alive) {
-        //     self.close();
-        // }
         return .disarm;
     }
 
@@ -412,7 +398,6 @@ pub const ClientConnection = struct {
         }
     }
 
-    // Modify the upgradeWriteCallback to set up WebSocket frame handling
     fn upgradeWriteCallback(
         write_payload_: ?*QueuedWrite,
         _: *Loop,
@@ -433,10 +418,6 @@ pub const ClientConnection = struct {
         };
         self.has_upgraded = true;
 
-        // Remove the problematic callback setup that was causing recursion
-        // The callback should already be set up to receive the final payload
-
-        // Continue reading (the read loop will now handle WebSocket frames properly)
         self.read();
         return .disarm;
     }
