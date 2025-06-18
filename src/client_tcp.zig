@@ -228,6 +228,37 @@ fn onTlsHandshakeRead(
             return .disarm;
         }
 
+        const outgoing_data = client.tls_client.?.processOutgoing(null) catch |err| {
+            std.log.err("TLS handshake outgoing error: {s}\n", .{@errorName(err)});
+            closeSocket(client);
+            return .disarm;
+        };
+
+        if (outgoing_data) |data| {
+            const queued_payload: *QueuedWrite = client.queued_write_pool.create() catch |err| {
+                std.log.err("Failed to create queued payload for handshake: {s}\n", .{@errorName(err)});
+                return .disarm;
+            };
+            queued_payload.* = .{
+                .client = client,
+                .frame = client.allocator.dupe(u8, data) catch |err| {
+                    std.log.err("Failed to duplicate TLS handshake data: {s}\n", .{@errorName(err)});
+                    client.queued_write_pool.destroy(queued_payload);
+                    return .disarm;
+                },
+            };
+            socket.queueWrite(
+                l,
+                &client.write_queue,
+                &queued_payload.req,
+                .{ .slice = queued_payload.frame },
+                QueuedWrite,
+                queued_payload,
+                onTlsHandshakeWrite,
+            );
+            return .disarm;
+        }
+
         if (client.tls_client.?.isHandshakeComplete()) {
             return startWebSocketUpgrade(client, l, socket);
         } else {

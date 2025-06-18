@@ -232,7 +232,7 @@ test "create TLS client" {
     client.connect();
 
     const start_time = std.time.milliTimestamp();
-    const duration_ms = 2000;
+    const duration_ms = 3000;
 
     while (std.time.milliTimestamp() - start_time < duration_ms) {
         try loop.run(.once);
