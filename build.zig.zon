@@ -9,7 +9,8 @@
             .hash = "libxev-0.0.0-86vtc87kEgBxgbJ1RI1R6Elynb7zydCgNR8dt3uw01My",
         },
         .boring_tls = .{
-            .path = "../boring_tls",
+            .url = "https://github.com/Thomvanoorschot/boring_tls/archive/main.tar.gz",
+            .hash = "boring_tls-0.0.1-QM_9thFoAACIlp-uVSmoePInIrh7Rd1RPLHs_eTNBTyo",
         },
     },
     .paths = .{
